@@ -1,0 +1,122 @@
+# QuotexAPI - Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         USER APPLICATION                         │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ uses
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      QuotexAPI (Client)                          │
+│                         Facade Layer                             │
+│  ┌────────────────────────────────────────────────────────┐     │
+│  │  • connect() / disconnect()                            │     │
+│  │  • get_balance() / switch_account()                    │     │
+│  │  • get_assets() / get_payout()                         │     │
+│  │  • buy() / cancel_trade()                              │     │
+│  │  • get_open_trades() / get_trade_history()             │     │
+│  │  • track_trade() / wait_for_result()                   │     │
+│  └────────────────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ orchestrates
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        SERVICE LAYER                             │
+├──────────────┬──────────────┬──────────────┬───────────────────┤
+│              │              │              │                    │
+│  ┌───────────▼────────┐   ┌─▼────────────┐ ┌─▼──────────────┐ │
+│  │   AuthService      │   │AccountService│ │InstrumentService│ │
+│  ├────────────────────┤   ├──────────────┤ ├─────────────────┤ │
+│  │• login_with_email()│   │• get_balances│ │• get_assets()   │ │
+│  │• login_with_ssid() │   │• get_active  │ │• get_payout()   │ │
+│  │• logout()          │   │• switch()    │ │• refresh()      │ │
+│  └────────────────────┘   └──────────────┘ └─────────────────┘ │
+│                                                                  │
+│  ┌────────────────────┐   ┌──────────────┐ ┌─────────────────┐│
+│  │ ConnectionService  │   │TradingService│ │  DataService    ││
+│  ├────────────────────┤   ├──────────────┤ ├─────────────────┤│
+│  │• connect()         │   │• place_trade │ │• get_open()     ││
+│  │• disconnect()      │   │• cancel()    │ │• get_history()  ││
+│  │• auto-reconnect    │   │• validate()  │ │• track_trade()  ││
+│  │• state tracking    │   │              │ │• wait_result()  ││
+│  └────────────────────┘   └──────────────┘ └─────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ uses
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         MODEL LAYER                              │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │         Pydantic Models (Type-safe Data)                 │   │
+│  ├──────────────────────────────────────────────────────────┤   │
+│  │  • UserProfile    • Balance       • Asset               │   │
+│  │  • Trade          • TradeRequest  • TradeResult          │   │
+│  │  • ConnectionConfig                                      │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                      Enumerations                         │   │
+│  ├──────────────────────────────────────────────────────────┤   │
+│  │  • AccountType    • TradeDirection  • TradeStatus       │   │
+│  │  • TradeResult    • ConnectionState • AssetType         │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ interacts with
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      EXTERNAL LAYER                              │
+├───────────────────────────────┬─────────────────────────────────┤
+│    HTTP/REST API              │      WebSocket API              │
+│    (aiohttp)                  │      (websockets)               │
+│  ┌─────────────────────────┐  │  ┌───────────────────────────┐ │
+│  │ • Authentication        │  │  │ • Live Data Stream        │ │
+│  │ • Account Info          │  │  │ • Trade Updates           │ │
+│  │ • Trade Placement       │  │  │ • Price Updates           │ │
+│  │ • Trade History         │  │  │ • Auto-reconnect          │ │
+│  └─────────────────────────┘  │  └───────────────────────────┘ │
+└───────────────────────────────┴─────────────────────────────────┘
+                                │
+                                ▼
+                    ╔═══════════════════════╗
+                    ║   QUOTEX PLATFORM     ║
+                    ║   (External API)      ║
+                    ╚═══════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    CROSS-CUTTING CONCERNS                        │
+├─────────────────────────────────────────────────────────────────┤
+│  Configuration  │  Logging      │  Exception     │  Validation  │
+│  (config.py)    │  (logger.py)  │  Handling      │  (Pydantic)  │
+│                 │               │  (exceptions)  │              │
+└─────────────────────────────────────────────────────────────────┘
+
+DATA FLOW EXAMPLE - Placing a Trade:
+════════════════════════════════════
+
+1. User Code:          api.buy("EURUSD", 10, CALL, 300)
+                                    ↓
+2. Client (Facade):    Validates params, creates TradeRequest
+                                    ↓
+3. TradingService:     Validates business rules, checks balance
+                                    ↓
+4. HTTP/WebSocket:     Sends trade request to Quotex API
+                                    ↓
+5. Quotex Platform:    Processes trade, returns order ID
+                                    ↓
+6. DataService:        Tracks trade, monitors for result
+                                    ↓
+7. User Code:          Receives Trade object with result
+
+KEY DESIGN PRINCIPLES:
+═════════════════════
+
+• Separation of Concerns:  Each layer has specific responsibility
+• Dependency Injection:    Services receive config/dependencies
+• Type Safety:             Pydantic models validate all data
+• Async/Await:             Non-blocking operations throughout
+• Error Handling:          Custom exceptions with clear messages
+• Extensibility:           Easy to add new services/endpoints
+• Testability:             Clear boundaries, easy to mock
+```
