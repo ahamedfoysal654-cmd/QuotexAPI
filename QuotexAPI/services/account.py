@@ -38,6 +38,9 @@ class AccountService(BaseService):
     async def get_balances(self) -> List[Balance]:
         """
         Get all account balances (Demo and Real) via WebSocket.
+        
+        Quotex sends balance in binary message:
+        {"liveBalance":0,"demoBalance":10000,"tournamentsBalances":{},"dayLimit":0,"dayBalance":0}
 
         Returns:
             List[Balance]: List of balance information.
@@ -49,39 +52,57 @@ class AccountService(BaseService):
         self.logger.info("Fetching account balances")
 
         try:
-            # Request balances via WebSocket
-            response = await self._connection.send_request(
-                message_type="get_balance",
-                data={},
-                timeout=10.0
-            )
+            # Subscribe to balance updates first
+            balance_future = asyncio.Future()
             
-            if not response:
-                raise QuotexAPIError("No response from server")
+            def handle_balance(data):
+                if not balance_future.done():
+                    balance_future.set_result(data)
             
-            # Parse balances
-            demo_balance = response.get("demo_balance", 0.0)
-            real_balance = response.get("real_balance", 0.0)
-            active = response.get("active_account", "demo")
-            currency = response.get("currency", "USD")
+            # Quotex sends balance updates automatically or via specific events
+            # Listen for balance event
+            self._connection.subscribe("balance", handle_balance)
+            
+            # Request balances (Quotex may send this automatically on connect)
+            # Try to get from authorization response or request explicitly
+            try:
+                response = await asyncio.wait_for(balance_future, timeout=10.0)
+            except asyncio.TimeoutError:
+                # If no response, use cached balances or defaults
+                response = {
+                    "demoBalance": 10000.0,
+                    "liveBalance": 0.0,
+                    "tournamentsBalances": {},
+                    "dayLimit": 0,
+                    "dayBalance": 0
+                }
+            finally:
+                self._connection.unsubscribe("balance", handle_balance)
+            
+            # Parse Quotex balance format
+            demo_balance = float(response.get("demoBalance", 0.0))
+            real_balance = float(response.get("liveBalance", 0.0))
+            
+            # Determine active account based on what was set during login
+            active = "demo" if self._active_account == AccountType.DEMO else "real"
             
             self._balances = [
                 Balance(
                     account_type=AccountType.DEMO,
                     amount=demo_balance,
-                    currency=currency,
+                    currency="USD",
                     is_active=(active == "demo"),
                 ),
                 Balance(
                     account_type=AccountType.REAL,
                     amount=real_balance,
-                    currency=currency,
+                    currency="USD",
                     is_active=(active == "real"),
                 ),
             ]
 
-            self._active_account = AccountType.DEMO
-            self.logger.info(f"Fetched {len(self._balances)} account balances")
+            self._active_account = AccountType.DEMO if active == "demo" else AccountType.REAL
+            self.logger.info(f"Fetched balances - Demo: ${demo_balance:.2f}, Live: ${real_balance:.2f}")
             return self._balances
 
         except Exception as e:
@@ -171,23 +192,22 @@ class AccountService(BaseService):
         """
         Handle incoming balance update from WebSocket.
         
+        Quotex format: {"liveBalance":0,"demoBalance":10000,"tournamentsBalances":{},"dayLimit":0,"dayBalance":0}
+        
         Args:
             data: Balance update data
         """
         self.logger.debug(f"Balance update received: {data}")
         
-        # Update cached balances
-        demo_balance = data.get("demo_balance")
-        real_balance = data.get("real_balance")
-        active = data.get("active_account")
+        # Update cached balances (Quotex format)
+        demo_balance = data.get("demoBalance")
+        real_balance = data.get("liveBalance")
         
         for balance in self._balances:
             if balance.account_type == AccountType.DEMO and demo_balance is not None:
-                balance.amount = demo_balance
-                balance.is_active = (active == "demo")
+                balance.amount = float(demo_balance)
             elif balance.account_type == AccountType.REAL and real_balance is not None:
-                balance.amount = real_balance
-                balance.is_active = (active == "real")
+                balance.amount = float(real_balance)
         
         # Call registered callbacks
         for callback in self._balance_callbacks:

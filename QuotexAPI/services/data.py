@@ -33,9 +33,13 @@ class DataService(BaseService):
         """Initialize the data service and subscribe to WebSocket events."""
         await super().initialize()
         
-        # Subscribe to real-time data events
-        self._connection.subscribe("candle", self._handle_candle_update)
-        self._connection.subscribe("quote", self._handle_quote_update)
+        # Subscribe to Quotex real-time data events
+        # Quotex sends candle/depth updates as "depth" events
+        self._connection.subscribe("depth", self._handle_candle_update)
+        self._connection.subscribe("depth", self._handle_quote_update)
+        
+        # Also handle tick data if available
+        self._connection.subscribe("tick", self._handle_quote_update)
 
     async def get_open_trades(self) -> List[Trade]:
         """
@@ -95,16 +99,23 @@ class DataService(BaseService):
         """
         Subscribe to real-time candle data stream via WebSocket.
         
+        Quotex format: 42["depth/follow","EURNZD_otc"]
+        
         Args:
             asset: Asset symbol (e.g., "EURUSD")
-            timeframe: Candle timeframe in seconds (default: 60)
+            timeframe: Candle timeframe in seconds (default: 60) - note: Quotex depth/follow doesn't specify timeframe in subscription
         """
         self._validate_initialized()
-        self.logger.info(f"Subscribing to candles: {asset} ({timeframe}s)")
         
-        await self._connection.send_request(
-            message_type="subscribe_candles",
-            data={"asset": asset, "timeframe": timeframe},
+        # Format asset name (add _otc suffix if not present)
+        formatted_asset = asset if asset.endswith("_otc") else f"{asset}_otc"
+        
+        self.logger.info(f"Subscribing to candles: {formatted_asset}")
+        
+        # Send Socket.IO depth/follow event
+        await self._connection.send_socketio_event(
+            event="depth/follow",
+            data=formatted_asset,  # Just the asset string, not a dict
             expect_response=False
         )
     
@@ -112,16 +123,23 @@ class DataService(BaseService):
         """
         Unsubscribe from candle data stream.
         
+        Quotex format: 42["depth/unfollow","EURNZD_otc"]
+        
         Args:
             asset: Asset symbol
-            timeframe: Candle timeframe in seconds
+            timeframe: Candle timeframe in seconds (ignored for Quotex)
         """
         self._validate_initialized()
-        self.logger.info(f"Unsubscribing from candles: {asset} ({timeframe}s)")
         
-        await self._connection.send_request(
-            message_type="unsubscribe_candles",
-            data={"asset": asset, "timeframe": timeframe},
+        # Format asset name (add _otc suffix if not present)
+        formatted_asset = asset if asset.endswith("_otc") else f"{asset}_otc"
+        
+        self.logger.info(f"Unsubscribing from candles: {formatted_asset}")
+        
+        # Send Socket.IO depth/unfollow event
+        await self._connection.send_socketio_event(
+            event="depth/unfollow",
+            data=formatted_asset,  # Just the asset string
             expect_response=False
         )
     
@@ -133,11 +151,16 @@ class DataService(BaseService):
             asset: Asset symbol (e.g., "EURUSD")
         """
         self._validate_initialized()
-        self.logger.info(f"Subscribing to quotes: {asset}")
         
-        await self._connection.send_request(
-            message_type="subscribe_quotes",
-            data={"asset": asset},
+        # Format asset name (add _otc suffix if not present)
+        formatted_asset = asset if asset.endswith("_otc") else f"{asset}_otc"
+        
+        self.logger.info(f"Subscribing to quotes: {formatted_asset}")
+        
+        # Quotex uses same depth/follow for quotes
+        await self._connection.send_socketio_event(
+            event="depth/follow",
+            data=formatted_asset,
             expect_response=False
         )
     
