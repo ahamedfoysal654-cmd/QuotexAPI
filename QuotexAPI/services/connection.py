@@ -1,7 +1,9 @@
-"""Connection management service for QuotexAPI."""
+"""Connection management service for QuotexAPI with WebSocket message routing."""
 
 import asyncio
-from typing import Callable, Optional
+import json
+from typing import Callable, Optional, Dict, Any
+from uuid import uuid4
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -13,7 +15,7 @@ from .base import BaseService
 
 
 class ConnectionService(BaseService):
-    """WebSocket connection service with auto-reconnect functionality."""
+    """WebSocket connection service with message routing and request/response correlation."""
 
     def __init__(self, config: QuotexConfig):
         """
@@ -29,6 +31,11 @@ class ConnectionService(BaseService):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._message_handler: Optional[Callable] = None
         self._receive_task: Optional[asyncio.Task] = None
+        
+        # Message routing infrastructure
+        self._pending_requests: Dict[str, asyncio.Future] = {}
+        self._event_handlers: Dict[str, list[Callable]] = {}
+        self._request_timeout: float = 30.0
 
     async def initialize(self) -> None:
         """Initialize the connection service."""
@@ -108,7 +115,7 @@ class ConnectionService(BaseService):
 
     async def send_message(self, message: dict) -> None:
         """
-        Send message through WebSocket.
+        Send message through WebSocket without expecting response.
 
         Args:
             message: Message dictionary to send.
@@ -120,14 +127,100 @@ class ConnectionService(BaseService):
             raise WebSocketError("Not connected to WebSocket")
 
         try:
-            await self._ws.send(str(message))
+            await self._ws.send(json.dumps(message))
             self.logger.debug(f"Sent message: {message}")
         except Exception as e:
             self.logger.error(f"Failed to send message: {str(e)}")
             raise WebSocketError(f"Failed to send message: {str(e)}") from e
+    
+    async def send_request(
+        self,
+        message_type: str,
+        data: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        expect_response: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Send a request message and wait for correlated response.
+        
+        Args:
+            message_type: Type of message (e.g., 'login', 'place_trade')
+            data: Message payload data
+            timeout: Response timeout in seconds (uses default if None)
+            expect_response: Whether to wait for a response
+            
+        Returns:
+            Response data if expect_response is True, None otherwise
+            
+        Raises:
+            WebSocketError: If send fails or timeout occurs
+        """
+        if self._state != ConnectionState.CONNECTED or not self._ws:
+            raise WebSocketError("Not connected to WebSocket")
+        
+        request_id = str(uuid4())
+        message = {
+            "msg": message_type,
+            "request_id": request_id,
+            **(data or {})
+        }
+        
+        future = None
+        if expect_response:
+            future = asyncio.Future()
+            self._pending_requests[request_id] = future
+        
+        try:
+            await self._ws.send(json.dumps(message))
+            self.logger.debug(f"Sent request [{request_id}]: {message_type}")
+            
+            if expect_response and future:
+                timeout_val = timeout or self._request_timeout
+                response = await asyncio.wait_for(future, timeout=timeout_val)
+                return response
+            
+            return None
+            
+        except asyncio.TimeoutError:
+            if request_id in self._pending_requests:
+                del self._pending_requests[request_id]
+            raise WebSocketError(f"Request timeout: {message_type}")
+        except Exception as e:
+            if request_id in self._pending_requests:
+                del self._pending_requests[request_id]
+            self.logger.error(f"Failed to send request: {e}")
+            raise WebSocketError(f"Send failed: {str(e)}") from e
+    
+    def subscribe(self, event_type: str, handler: Callable) -> None:
+        """
+        Subscribe to WebSocket events.
+        
+        Args:
+            event_type: Type of event to listen for (e.g., 'candle', 'trade_result')
+            handler: Callback function (sync or async) to handle the event
+        """
+        if event_type not in self._event_handlers:
+            self._event_handlers[event_type] = []
+        self._event_handlers[event_type].append(handler)
+        self.logger.debug(f"Subscribed to event: {event_type}")
+    
+    def unsubscribe(self, event_type: str, handler: Callable) -> None:
+        """
+        Unsubscribe from WebSocket events.
+        
+        Args:
+            event_type: Event type to unsubscribe from
+            handler: Handler function to remove
+        """
+        if event_type in self._event_handlers:
+            try:
+                self._event_handlers[event_type].remove(handler)
+                self.logger.debug(f"Unsubscribed from event: {event_type}")
+            except ValueError:
+                pass
 
     async def _receive_messages(self) -> None:
-        """Receive and process WebSocket messages."""
+        """Receive and process WebSocket messages with routing."""
         try:
             while self._ws and self._state == ConnectionState.CONNECTED:
                 try:
@@ -135,8 +228,24 @@ class ConnectionService(BaseService):
                         self._ws.recv(), timeout=30.0
                     )
 
-                    if self._message_handler:
-                        await self._message_handler(message)
+                    # Parse JSON message
+                    try:
+                        data = json.loads(message)
+                        self.logger.debug(f"Received message: {data}")
+                        
+                        # Route the message
+                        await self._route_message(data)
+                        
+                        # Also call legacy message handler if set
+                        if self._message_handler:
+                            if asyncio.iscoroutinefunction(self._message_handler):
+                                await self._message_handler(data)
+                            else:
+                                self._message_handler(data)
+                                
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Failed to parse message: {e}")
+                        continue
 
                 except asyncio.TimeoutError:
                     # Timeout is normal, just continue
@@ -151,6 +260,33 @@ class ConnectionService(BaseService):
         except Exception as e:
             self.logger.error(f"Error receiving messages: {str(e)}")
             await self._handle_disconnect()
+    
+    async def _route_message(self, data: Dict[str, Any]) -> None:
+        """
+        Route incoming message to appropriate handler.
+        
+        Args:
+            data: Parsed message data
+        """
+        # Check if it's a response to a pending request
+        request_id = data.get("request_id")
+        if request_id and request_id in self._pending_requests:
+            future = self._pending_requests.pop(request_id)
+            if not future.done():
+                future.set_result(data)
+            return
+        
+        # Route to event handlers based on message type
+        msg_type = data.get("msg") or data.get("type") or data.get("event")
+        if msg_type and msg_type in self._event_handlers:
+            for handler in self._event_handlers[msg_type]:
+                try:
+                    if asyncio.iscoroutinefunction(handler):
+                        await handler(data)
+                    else:
+                        handler(data)
+                except Exception as e:
+                    self.logger.error(f"Event handler error for {msg_type}: {e}")
 
     async def _handle_disconnect(self) -> None:
         """Handle unexpected disconnection."""

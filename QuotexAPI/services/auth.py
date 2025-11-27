@@ -1,28 +1,28 @@
-"""Authentication service for QuotexAPI."""
+"""Authentication service for QuotexAPI using WebSocket messages."""
 
 import asyncio
 from typing import Dict, Optional
-
-import aiohttp
 
 from ..config import QuotexConfig
 from ..exceptions import AuthenticationError, InvalidCredentialsError, SessionExpiredError
 from ..models import UserProfile
 from .base import BaseService
+from .connection import ConnectionService
 
 
 class AuthService(BaseService):
-    """Authentication service for handling login, logout, and session management."""
+    """Authentication service using WebSocket messages for login/logout."""
 
-    def __init__(self, config: QuotexConfig):
+    def __init__(self, config: QuotexConfig, connection: ConnectionService):
         """
         Initialize authentication service.
 
         Args:
             config: Configuration instance.
+            connection: WebSocket connection service.
         """
         super().__init__(config)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._connection = connection
         self._ssid: Optional[str] = None
         self._user_profile: Optional[UserProfile] = None
         self._is_authenticated = False
@@ -30,18 +30,14 @@ class AuthService(BaseService):
     async def initialize(self) -> None:
         """Initialize the authentication service."""
         await super().initialize()
-        self._session = aiohttp.ClientSession()
 
     async def cleanup(self) -> None:
         """Cleanup authentication service resources."""
-        if self._session:
-            await self._session.close()
-            self._session = None
         await super().cleanup()
 
     async def login_with_email(self, email: str, password: str) -> UserProfile:
         """
-        Login with email and password.
+        Login with email and password via WebSocket.
 
         Args:
             email: User email.
@@ -58,20 +54,31 @@ class AuthService(BaseService):
         self.logger.info(f"Attempting login with email: {email}")
 
         try:
-            # TODO: Implement actual API call
-            # This is a placeholder implementation
-            await asyncio.sleep(0.1)  # Simulate API call
-
-            # Mock response for demonstration
-            self._ssid = "mock_session_id"
+            # Send login request via WebSocket
+            response = await self._connection.send_request(
+                message_type="login",
+                data={
+                    "email": email,
+                    "password": password
+                },
+                timeout=30.0
+            )
+            
+            # Parse response
+            if not response or not response.get("success"):
+                error = response.get("error", "Login failed") if response else "No response"
+                raise InvalidCredentialsError(error)
+            
+            # Store session data
+            self._ssid = response.get("ssid")
             self._user_profile = UserProfile(
-                user_id="user123",
+                user_id=response.get("user_id", ""),
                 email=email,
-                username=email.split("@")[0],
-                demo_balance=10000.0,
-                real_balance=0.0,
-                active_account="demo",
-                currency="USD",
+                username=response.get("username", email.split("@")[0]),
+                demo_balance=response.get("demo_balance", 0.0),
+                real_balance=response.get("real_balance", 0.0),
+                active_account=response.get("active_account", "demo"),
+                currency=response.get("currency", "USD"),
             )
             self._is_authenticated = True
 
@@ -87,7 +94,7 @@ class AuthService(BaseService):
 
     async def login_with_ssid(self, ssid: str) -> UserProfile:
         """
-        Login with session ID.
+        Login with session ID via WebSocket.
 
         Args:
             ssid: Session ID.
@@ -103,19 +110,27 @@ class AuthService(BaseService):
         self.logger.info("Attempting login with SSID")
 
         try:
-            # TODO: Implement actual API call
-            # This is a placeholder implementation
-            await asyncio.sleep(0.1)  # Simulate API call
+            # Send SSID login request via WebSocket
+            response = await self._connection.send_request(
+                message_type="login",
+                data={"ssid": ssid},
+                timeout=30.0
+            )
+            
+            # Parse response
+            if not response or not response.get("success"):
+                error = response.get("error", "SSID login failed") if response else "No response"
+                raise SessionExpiredError(error)
 
             self._ssid = ssid
             self._user_profile = UserProfile(
-                user_id="user123",
-                email="user@example.com",
-                username="user",
-                demo_balance=10000.0,
-                real_balance=0.0,
-                active_account="demo",
-                currency="USD",
+                user_id=response.get("user_id", ""),
+                email=response.get("email", ""),
+                username=response.get("username", "user"),
+                demo_balance=response.get("demo_balance", 0.0),
+                real_balance=response.get("real_balance", 0.0),
+                active_account=response.get("active_account", "demo"),
+                currency=response.get("currency", "USD"),
             )
             self._is_authenticated = True
 
@@ -131,7 +146,7 @@ class AuthService(BaseService):
 
     async def logout(self) -> None:
         """
-        Logout from the Quotex API.
+        Logout from the Quotex API via WebSocket.
 
         Raises:
             AuthenticationError: If logout fails.
@@ -143,8 +158,12 @@ class AuthService(BaseService):
             return
 
         try:
-            # TODO: Implement actual API call
-            await asyncio.sleep(0.1)  # Simulate API call
+            # Send logout request via WebSocket
+            await self._connection.send_request(
+                message_type="logout",
+                data={},
+                timeout=10.0
+            )
 
             self._ssid = None
             self._user_profile = None

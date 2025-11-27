@@ -1,36 +1,45 @@
-"""Data service for managing trade history and live trades."""
+"""Data service for managing trade history, live trades, and real-time data via WebSocket."""
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Callable
 
 from ..config import QuotexConfig
 from ..enums import TradeResult, TradeStatus
 from ..exceptions import OrderNotFoundError, QuotexAPIError, TimeoutError
-from ..models import Trade
+from ..models import Trade, Candle
 from .base import BaseService
+from .connection import ConnectionService
 
 
 class DataService(BaseService):
-    """Service for managing trade data, history, and results."""
+    """Service for managing trade data, history, and real-time data streams via WebSocket."""
 
-    def __init__(self, config: QuotexConfig):
+    def __init__(self, config: QuotexConfig, connection: ConnectionService):
         """
         Initialize data service.
 
         Args:
             config: Configuration instance.
+            connection: WebSocket connection service.
         """
         super().__init__(config)
+        self._connection = connection
         self._active_trades: dict[str, Trade] = {}
+        self._candle_subscribers: Dict[str, List[Callable]] = {}
+        self._quote_subscribers: Dict[str, List[Callable]] = {}
 
     async def initialize(self) -> None:
-        """Initialize the data service."""
+        """Initialize the data service and subscribe to WebSocket events."""
         await super().initialize()
+        
+        # Subscribe to real-time data events
+        self._connection.subscribe("candle", self._handle_candle_update)
+        self._connection.subscribe("quote", self._handle_quote_update)
 
     async def get_open_trades(self) -> List[Trade]:
         """
-        Get list of open (active) trades.
+        Get list of open (active) trades via WebSocket.
 
         Returns:
             List[Trade]: List of open trades.
@@ -42,27 +51,35 @@ class DataService(BaseService):
         self.logger.info("Fetching open trades")
 
         try:
-            # TODO: Implement actual API call
-            # This is a placeholder implementation
-            await asyncio.sleep(0.1)  # Simulate API call
-
-            # Mock open trades
+            # Request open trades via WebSocket
+            response = await self._connection.send_request(
+                message_type="get_open_trades",
+                data={},
+                timeout=10.0
+            )
+            
+            if not response or not response.get("success"):
+                raise QuotexAPIError("Failed to fetch open trades")
+            
+            # Parse trades from response
+            trades_data = response.get("trades", [])
             open_trades = [
                 Trade(
-                    order_id="trade1",
-                    asset="EURUSD",
-                    direction="call",
-                    amount=10.0,
-                    expiry=300,
+                    order_id=t.get("order_id", ""),
+                    asset=t.get("asset", ""),
+                    direction=t.get("direction", "call"),
+                    amount=t.get("amount", 0.0),
+                    expiry=t.get("expiry", 60),
                     status=TradeStatus.ACTIVE,
                     result=None,
                     profit=None,
-                    open_price=1.0850,
+                    open_price=t.get("open_price", 0.0),
                     close_price=None,
-                    open_time=datetime.now() - timedelta(seconds=120),
+                    open_time=datetime.fromtimestamp(t.get("open_time", 0)),
                     close_time=None,
-                    payout_percentage=85.0,
+                    payout_percentage=t.get("payout", 0.0),
                 )
+                for t in trades_data
             ]
 
             self._active_trades = {trade.order_id: trade for trade in open_trades}
@@ -73,6 +90,112 @@ class DataService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to fetch open trades: {str(e)}")
             raise QuotexAPIError(f"Failed to fetch open trades: {str(e)}") from e
+    
+    async def subscribe_candles(self, asset: str, timeframe: int = 60) -> None:
+        """
+        Subscribe to real-time candle data stream via WebSocket.
+        
+        Args:
+            asset: Asset symbol (e.g., "EURUSD")
+            timeframe: Candle timeframe in seconds (default: 60)
+        """
+        self._validate_initialized()
+        self.logger.info(f"Subscribing to candles: {asset} ({timeframe}s)")
+        
+        await self._connection.send_request(
+            message_type="subscribe_candles",
+            data={"asset": asset, "timeframe": timeframe},
+            expect_response=False
+        )
+    
+    async def unsubscribe_candles(self, asset: str, timeframe: int = 60) -> None:
+        """
+        Unsubscribe from candle data stream.
+        
+        Args:
+            asset: Asset symbol
+            timeframe: Candle timeframe in seconds
+        """
+        self._validate_initialized()
+        self.logger.info(f"Unsubscribing from candles: {asset} ({timeframe}s)")
+        
+        await self._connection.send_request(
+            message_type="unsubscribe_candles",
+            data={"asset": asset, "timeframe": timeframe},
+            expect_response=False
+        )
+    
+    async def subscribe_quotes(self, asset: str) -> None:
+        """
+        Subscribe to real-time quote/tick data via WebSocket.
+        
+        Args:
+            asset: Asset symbol (e.g., "EURUSD")
+        """
+        self._validate_initialized()
+        self.logger.info(f"Subscribing to quotes: {asset}")
+        
+        await self._connection.send_request(
+            message_type="subscribe_quotes",
+            data={"asset": asset},
+            expect_response=False
+        )
+    
+    def on_candle(self, asset: str, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """
+        Register callback for candle updates.
+        
+        Args:
+            asset: Asset to monitor
+            callback: Function to call on candle update
+        """
+        if asset not in self._candle_subscribers:
+            self._candle_subscribers[asset] = []
+        self._candle_subscribers[asset].append(callback)
+    
+    def on_quote(self, asset: str, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """
+        Register callback for quote updates.
+        
+        Args:
+            asset: Asset to monitor
+            callback: Function to call on quote update
+        """
+        if asset not in self._quote_subscribers:
+            self._quote_subscribers[asset] = []
+        self._quote_subscribers[asset].append(callback)
+    
+    async def _handle_candle_update(self, data: Dict[str, Any]) -> None:
+        """Handle incoming candle update from WebSocket."""
+        asset = data.get("asset")
+        if not asset:
+            return
+        
+        if asset in self._candle_subscribers:
+            for callback in self._candle_subscribers[asset]:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(data)
+                    else:
+                        callback(data)
+                except Exception as e:
+                    self.logger.error(f"Candle callback error: {e}")
+    
+    async def _handle_quote_update(self, data: Dict[str, Any]) -> None:
+        """Handle incoming quote update from WebSocket."""
+        asset = data.get("asset")
+        if not asset:
+            return
+        
+        if asset in self._quote_subscribers:
+            for callback in self._quote_subscribers[asset]:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(data)
+                    else:
+                        callback(data)
+                except Exception as e:
+                    self.logger.error(f"Quote callback error: {e}")
 
     async def get_trade_history(
         self,

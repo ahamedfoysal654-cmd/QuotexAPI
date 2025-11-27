@@ -1,0 +1,178 @@
+# QuotexAPI - Complete WebSocket Architecture Visual
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                QuotexAPI WebSocket-Centric Architecture                  ┃
+┃                     (All Operations via WebSocket)                       ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+                              ┌─────────────────┐
+                              │  QuotexAPI      │
+                              │  Client         │
+                              │  (User Facade)  │
+                              └────────┬────────┘
+                                       │
+                 ┌─────────────────────┼─────────────────────┐
+                 │                     │                     │
+                 ▼                     ▼                     ▼
+        ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
+        │  AuthService   │   │ TradingService │   │  DataService   │
+        │  • login()     │   │ • place_trade()│   │ • subscribe()  │
+        │  • logout()    │   │ • cancel()     │   │ • on_candle()  │
+        │  (WebSocket)   │   │ • on_update()  │   │ • on_quote()   │
+        └────────┬───────┘   └────────┬───────┘   └────────┬───────┘
+                 │                     │                     │
+                 └─────────────────────┼─────────────────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │ AccountService  │
+                              │ • get_balance() │
+                              │ • switch()      │
+                              │ • on_balance()  │
+                              └────────┬────────┘
+                                       │
+                                       │
+            ┏━━━━━━━━━━━━━━━━━━━━━━━━━▼━━━━━━━━━━━━━━━━━━━━━━━━━┓
+            ┃          ConnectionService (WebSocket Core)        ┃
+            ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+            ┃                                                     ┃
+            ┃  ┌─────────────────────────────────────────────┐   ┃
+            ┃  │  Request/Response Correlation                │   ┃
+            ┃  │  • Generates unique request_id              │   ┃
+            ┃  │  • Creates Future for each request          │   ┃
+            ┃  │  • Matches responses by request_id          │   ┃
+            ┃  └─────────────────────────────────────────────┘   ┃
+            ┃                                                     ┃
+            ┃  ┌─────────────────────────────────────────────┐   ┃
+            ┃  │  Event Subscription System                   │   ┃
+            ┃  │  • subscribe(event_type, handler)           │   ┃
+            ┃  │  • Routes events to registered handlers     │   ┃
+            ┃  │  • Supports sync/async callbacks            │   ┃
+            ┃  └─────────────────────────────────────────────┘   ┃
+            ┃                                                     ┃
+            ┃  ┌─────────────────────────────────────────────┐   ┃
+            ┃  │  Message Router                              │   ┃
+            ┃  │  • _route_message() dispatcher              │   ┃
+            ┃  │  • Handles requests, responses, events      │   ┃
+            ┃  │  • Concurrent message processing            │   ┃
+            ┃  └─────────────────────────────────────────────┘   ┃
+            ┃                                                     ┃
+            ┃  ┌─────────────────────────────────────────────┐   ┃
+            ┃  │  Auto-Reconnect                              │   ┃
+            ┃  │  • Exponential backoff                      │   ┃
+            ┃  │  • Maintains subscription state             │   ┃
+            ┃  │  • Connection health monitoring             │   ┃
+            ┃  └─────────────────────────────────────────────┘   ┃
+            ┃                                                     ┃
+            ┗━━━━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━┛
+                                     │
+                                     │ WebSocket Protocol
+                                     │ (ws_protocol.py)
+                                     │
+            ┌────────────────────────┼────────────────────────┐
+            │                        │                        │
+            ▼                        ▼                        ▼
+    ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+    │   Requests   │       │  Responses   │       │    Events    │
+    ├──────────────┤       ├──────────────┤       ├──────────────┤
+    │ • login      │       │ • auth_resp  │       │ • candle     │
+    │ • place_trade│       │ • trade_resp │       │ • quote      │
+    │ • subscribe  │       │ • balance    │       │ • trade_res  │
+    │ • get_data   │       │ • assets     │       │ • balance_up │
+    └──────────────┘       └──────────────┘       └──────────────┘
+                                     │
+                                     │
+                     ┌───────────────▼───────────────┐
+                     │   WebSocket Connection        │
+                     │   wss://quotex.io/ws          │
+                     └───────────────┬───────────────┘
+                                     │
+                                     │
+                            ┌────────▼────────┐
+                            │  Quotex Server  │
+                            └─────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Message Flow Examples:
+
+1. REQUEST/RESPONSE (with correlation):
+
+   Client                                              Server
+     │                                                    │
+     ├─ send_request("login", {...})                     │
+     │  request_id: "abc-123"                            │
+     │  ────────────────────────────────────────────────►│
+     │                                                    │
+     │◄─────────────────────────────────────────────────┤
+     │  {"msg": "auth_response",                         │
+     │   "request_id": "abc-123",  ◄── Matched!         │
+     │   "success": true, "ssid": "..."}                 │
+     │                                                    │
+     └─ Future resolved with response                    │
+
+
+2. EVENT SUBSCRIPTION (server push):
+
+   Client                                              Server
+     │                                                    │
+     │  subscribe("trade_result", handler)               │
+     │                                                    │
+     │◄─────────────────────────────────────────────────┤
+     │  {"msg": "trade_result",          ◄── Event!     │
+     │   "order_id": "...",                              │
+     │   "result": "win", "profit": 85}                  │
+     │                                                    │
+     └─ handler(data) called automatically               │
+
+
+3. REAL-TIME DATA STREAM:
+
+   Client                                              Server
+     │                                                    │
+     ├─ send_request("subscribe_candles")                │
+     │  ────────────────────────────────────────────────►│
+     │                                                    │
+     │◄─────────────────────────────────────────────────┤
+     │  {"msg": "candle", "close": 1.0850}  ◄── Event   │
+     │                                                    │
+     │◄─────────────────────────────────────────────────┤
+     │  {"msg": "candle", "close": 1.0852}  ◄── Event   │
+     │                                                    │
+     │◄─────────────────────────────────────────────────┤
+     │  {"msg": "candle", "close": 1.0851}  ◄── Event   │
+     │                                                    │
+     └─ on_candle() called for each update               │
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Key Features:
+
+✅ Single WebSocket Connection
+   └─ All operations share one persistent connection
+
+✅ Request/Response Correlation  
+   └─ Unique request_id matches requests to responses
+
+✅ Event Subscription
+   └─ Services subscribe to message types they care about
+
+✅ Message Routing
+   └─ Automatic dispatch to correct handlers
+
+✅ Real-time Streams
+   └─ Server pushes updates (no polling!)
+
+✅ Auto-Reconnect
+   └─ Handles disconnections transparently
+
+✅ Type-Safe Protocol
+   └─ All messages defined in ws_protocol.py
+
+✅ Async/Await
+   └─ Modern Python async throughout
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
