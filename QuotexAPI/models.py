@@ -135,6 +135,33 @@ class TradeResult(BaseModel):
         }
 
 
+class Candle(BaseModel):
+    """Candle/OHLC data model."""
+
+    asset: str = Field(..., description="Asset symbol")
+    timestamp: int = Field(..., description="Candle timestamp (Unix time)")
+    open: float = Field(..., description="Opening price")
+    high: float = Field(..., description="Highest price")
+    low: float = Field(..., description="Lowest price")
+    close: float = Field(..., description="Closing price")
+    volume: Optional[float] = Field(None, description="Trading volume")
+    timeframe: Optional[int] = Field(None, description="Timeframe in seconds")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "asset": "EURUSD_otc",
+                "timestamp": 1732704000,
+                "open": 1.0850,
+                "high": 1.0865,
+                "low": 1.0845,
+                "close": 1.0860,
+                "volume": 1000.0,
+                "timeframe": 60,
+            }
+        }
+
+
 class UserProfile(BaseModel):
     """User profile model."""
 

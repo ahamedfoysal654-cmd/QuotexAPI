@@ -65,13 +65,15 @@ class QuotexAPI:
         # Setup logging
         self.logger = setup_logger("quotex_api", log_level)
 
-        # Initialize services
-        self.auth = AuthService(self.config)
+        # Initialize connection service first
         self.connection = ConnectionService(self.config)
-        self.account = AccountService(self.config)
-        self.instrument = InstrumentService(self.config)
-        self.trading = TradingService(self.config)
-        self.data = DataService(self.config)
+        
+        # Initialize other services with connection
+        self.auth = AuthService(self.config, self.connection)
+        self.account = AccountService(self.config, self.connection)
+        self.instrument = InstrumentService(self.config, self.connection)
+        self.trading = TradingService(self.config, self.connection)
+        self.data = DataService(self.config, self.connection)
 
         self._initialized = False
 

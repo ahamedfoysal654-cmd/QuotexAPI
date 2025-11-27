@@ -64,7 +64,7 @@ from .exceptions import (
     TradeError,
     WebSocketError,
 )
-from .models import Asset, Balance, Trade, TradeRequest, UserProfile
+from .models import Asset, Balance, Candle, Trade, TradeRequest, UserProfile
 
 __version__ = "0.1.0"
 __author__ = "ChipaDevTeam"
@@ -98,6 +98,7 @@ __all__ = [
     # Models
     "Asset",
     "Balance",
+    "Candle",
     "Trade",
     "TradeRequest",
     "UserProfile",
