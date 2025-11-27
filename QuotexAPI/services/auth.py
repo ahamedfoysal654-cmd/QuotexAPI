@@ -35,13 +35,14 @@ class AuthService(BaseService):
         """Cleanup authentication service resources."""
         await super().cleanup()
 
-    async def login_with_email(self, email: str, password: str) -> UserProfile:
+    async def login_with_email(self, email: str, password: str, is_demo: bool = True) -> UserProfile:
         """
-        Login with email and password via WebSocket.
+        Login with email and password via WebSocket using Socket.IO format.
 
         Args:
             email: User email.
             password: User password.
+            is_demo: Whether to use demo account (default: True).
 
         Returns:
             UserProfile: User profile information.
@@ -54,30 +55,52 @@ class AuthService(BaseService):
         self.logger.info(f"Attempting login with email: {email}")
 
         try:
-            # Send login request via WebSocket
-            response = await self._connection.send_request(
-                message_type="login",
-                data={
-                    "email": email,
-                    "password": password
-                },
-                timeout=30.0
+            # For email/password, Quotex typically requires HTTP login first
+            # to get SSID, then use that SSID for WebSocket authorization
+            # This is a simplified version - actual implementation may need HTTP step
+            
+            login_data = {
+                "email": email,
+                "password": password,
+                "isDemo": 1 if is_demo else 0
+            }
+            
+            # Subscribe to login response
+            login_future = asyncio.Future()
+            
+            def handle_login_response(data):
+                if not login_future.done():
+                    login_future.set_result(data)
+            
+            self._connection.subscribe("login", handle_login_response)
+            
+            # Send Socket.IO login event
+            await self._connection.send_socketio_event(
+                event="login",
+                data=login_data,
+                expect_response=False
             )
             
+            # Wait for login response
+            try:
+                response = await asyncio.wait_for(login_future, timeout=30.0)
+            finally:
+                self._connection.unsubscribe("login", handle_login_response)
+            
             # Parse response
-            if not response or not response.get("success"):
-                error = response.get("error", "Login failed") if response else "No response"
+            if not response or response.get("isSuccessful") == False:
+                error = response.get("message", "Login failed") if response else "No response"
                 raise InvalidCredentialsError(error)
             
             # Store session data
-            self._ssid = response.get("ssid")
+            self._ssid = response.get("ssid", response.get("session", ""))
             self._user_profile = UserProfile(
-                user_id=response.get("user_id", ""),
+                user_id=response.get("user_id", response.get("userId", "")),
                 email=email,
-                username=response.get("username", email.split("@")[0]),
-                demo_balance=response.get("demo_balance", 0.0),
-                real_balance=response.get("real_balance", 0.0),
-                active_account=response.get("active_account", "demo"),
+                username=response.get("username", response.get("name", email.split("@")[0])),
+                demo_balance=response.get("demo_balance", response.get("demoBalance", 10000.0)),
+                real_balance=response.get("real_balance", response.get("realBalance", 0.0)),
+                active_account="demo" if is_demo else "real",
                 currency=response.get("currency", "USD"),
             )
             self._is_authenticated = True
@@ -92,12 +115,15 @@ class AuthService(BaseService):
             self.logger.error(f"Login failed: {str(e)}")
             raise AuthenticationError(f"Login failed: {str(e)}") from e
 
-    async def login_with_ssid(self, ssid: str) -> UserProfile:
+    async def login_with_ssid(self, ssid: str, is_demo: bool = True) -> UserProfile:
         """
-        Login with session ID via WebSocket.
+        Login with session ID via WebSocket using Socket.IO format.
+        
+        Sends: 42["authorization",{"session":"<ssid>","isDemo":1,"tournamentId":0}]
 
         Args:
-            ssid: Session ID.
+            ssid: Session ID (SSID token).
+            is_demo: Whether to use demo account (default: True).
 
         Returns:
             UserProfile: User profile information.
@@ -107,34 +133,62 @@ class AuthService(BaseService):
             AuthenticationError: If authentication fails.
         """
         self._validate_initialized()
-        self.logger.info("Attempting login with SSID")
+        self.logger.info("Attempting login with SSID via Socket.IO")
 
         try:
-            # Send SSID login request via WebSocket
-            response = await self._connection.send_request(
-                message_type="login",
-                data={"ssid": ssid},
-                timeout=30.0
+            # Send authorization event in Socket.IO format
+            # Format: 42["authorization",{"session":"...","isDemo":1,"tournamentId":0}]
+            auth_data = {
+                "session": ssid,
+                "isDemo": 1 if is_demo else 0,
+                "tournamentId": 0
+            }
+            
+            # Subscribe to authorization response before sending
+            auth_future = asyncio.Future()
+            
+            def handle_auth_response(data):
+                if not auth_future.done():
+                    auth_future.set_result(data)
+            
+            self._connection.subscribe("authorization", handle_auth_response)
+            
+            # Send Socket.IO authorization event
+            await self._connection.send_socketio_event(
+                event="authorization",
+                data=auth_data,
+                expect_response=False
             )
             
+            # Wait for authorization response
+            try:
+                response = await asyncio.wait_for(auth_future, timeout=30.0)
+            finally:
+                self._connection.unsubscribe("authorization", handle_auth_response)
+            
             # Parse response
-            if not response or not response.get("success"):
-                error = response.get("error", "SSID login failed") if response else "No response"
+            if not response:
+                raise SessionExpiredError("No authorization response received")
+            
+            # Check if authorization was successful
+            # Response format depends on Quotex API
+            if response.get("isSuccessful") == False or response.get("error"):
+                error = response.get("message", "SSID login failed")
                 raise SessionExpiredError(error)
 
             self._ssid = ssid
             self._user_profile = UserProfile(
-                user_id=response.get("user_id", ""),
+                user_id=response.get("user_id", response.get("userId", "")),
                 email=response.get("email", ""),
-                username=response.get("username", "user"),
-                demo_balance=response.get("demo_balance", 0.0),
-                real_balance=response.get("real_balance", 0.0),
-                active_account=response.get("active_account", "demo"),
+                username=response.get("username", response.get("name", "user")),
+                demo_balance=response.get("demo_balance", response.get("demoBalance", 10000.0)),
+                real_balance=response.get("real_balance", response.get("realBalance", 0.0)),
+                active_account="demo" if is_demo else "real",
                 currency=response.get("currency", "USD"),
             )
             self._is_authenticated = True
 
-            self.logger.info("Successfully logged in with SSID")
+            self.logger.info(f"Successfully logged in with SSID (demo={is_demo})")
             return self._user_profile
 
         except SessionExpiredError:

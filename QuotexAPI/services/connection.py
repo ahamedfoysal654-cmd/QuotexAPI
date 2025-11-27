@@ -1,7 +1,8 @@
-"""Connection management service for QuotexAPI with WebSocket message routing."""
+"""Connection management service for QuotexAPI with Socket.IO message routing."""
 
 import asyncio
 import json
+import re
 from typing import Callable, Optional, Dict, Any
 from uuid import uuid4
 
@@ -15,7 +16,7 @@ from .base import BaseService
 
 
 class ConnectionService(BaseService):
-    """WebSocket connection service with message routing and request/response correlation."""
+    """WebSocket connection service with Socket.IO message routing."""
 
     def __init__(self, config: QuotexConfig):
         """
@@ -32,10 +33,13 @@ class ConnectionService(BaseService):
         self._message_handler: Optional[Callable] = None
         self._receive_task: Optional[asyncio.Task] = None
         
-        # Message routing infrastructure
+        # Message routing infrastructure (Socket.IO format)
         self._pending_requests: Dict[str, asyncio.Future] = {}
         self._event_handlers: Dict[str, list[Callable]] = {}
         self._request_timeout: float = 30.0
+        
+        # Socket.IO protocol tracking
+        self._socketio_sid: Optional[str] = None
 
     async def initialize(self) -> None:
         """Initialize the connection service."""
@@ -113,6 +117,64 @@ class ConnectionService(BaseService):
         self._state = ConnectionState.DISCONNECTED
         self.logger.info("Disconnected from WebSocket")
 
+    def _format_socketio_message(self, event: str, data: Any) -> str:
+        """
+        Format message in Socket.IO format: 42["event", data]
+        
+        Args:
+            event: Event name
+            data: Event data (dict or other JSON-serializable)
+            
+        Returns:
+            Formatted Socket.IO message string
+        """
+        # Socket.IO format: 42["event_name", {data}]
+        payload = json.dumps([event, data])
+        return f"42{payload}"
+    
+    def _parse_socketio_message(self, message: str) -> Optional[tuple[str, Any]]:
+        """
+        Parse Socket.IO format message: 42["event", data]
+        
+        Args:
+            message: Raw message string
+            
+        Returns:
+            Tuple of (event_name, data) or None if not parseable
+        """
+        # Socket.IO messages start with message type code (42 for message)
+        if not message.startswith("42"):
+            # Handle Socket.IO handshake messages (0, 40, etc.)
+            if message.startswith("0"):
+                # Handshake: 0{"sid":"...","upgrades":[],...}
+                try:
+                    handshake_data = json.loads(message[1:])
+                    self._socketio_sid = handshake_data.get("sid")
+                    self.logger.debug(f"Socket.IO handshake received, SID: {self._socketio_sid}")
+                except:
+                    pass
+            elif message == "40":
+                # Connection acknowledgment
+                self.logger.debug("Socket.IO connection acknowledged")
+            elif message.startswith("3"):
+                # Pong response to ping
+                self.logger.debug("Socket.IO pong received")
+            return None
+        
+        try:
+            # Extract the JSON array after "42"
+            json_part = message[2:]
+            payload = json.loads(json_part)
+            
+            if isinstance(payload, list) and len(payload) >= 2:
+                event_name = payload[0]
+                event_data = payload[1] if len(payload) > 1 else {}
+                return (event_name, event_data)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse Socket.IO message: {e}")
+        
+        return None
+    
     async def send_message(self, message: dict) -> None:
         """
         Send message through WebSocket without expecting response.
@@ -132,6 +194,48 @@ class ConnectionService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to send message: {str(e)}")
             raise WebSocketError(f"Failed to send message: {str(e)}") from e
+    
+    async def send_socketio_event(self, event: str, data: Any, expect_response: bool = False) -> Optional[Any]:
+        """
+        Send Socket.IO formatted event.
+        
+        Args:
+            event: Event name (e.g., "authorization", "place_trade")
+            data: Event data
+            expect_response: Whether to wait for response
+            
+        Returns:
+            Response data if expect_response is True
+        """
+        if self._state != ConnectionState.CONNECTED or not self._ws:
+            raise WebSocketError("Not connected to WebSocket")
+        
+        try:
+            # Format in Socket.IO format: 42["event", data]
+            socketio_msg = self._format_socketio_message(event, data)
+            
+            self.logger.debug(f"Sending Socket.IO event '{event}': {socketio_msg}")
+            await self._ws.send(socketio_msg)
+            
+            if expect_response:
+                # Create future to wait for response
+                future = asyncio.Future()
+                request_id = f"{event}_{id(future)}"
+                self._pending_requests[request_id] = future
+                
+                try:
+                    response = await asyncio.wait_for(future, timeout=self._request_timeout)
+                    return response
+                except asyncio.TimeoutError:
+                    if request_id in self._pending_requests:
+                        del self._pending_requests[request_id]
+                    raise WebSocketError(f"Timeout waiting for response to '{event}'")
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send Socket.IO event: {e}")
+            raise WebSocketError(f"Failed to send Socket.IO event: {str(e)}") from e
     
     async def send_request(
         self,
@@ -220,7 +324,7 @@ class ConnectionService(BaseService):
                 pass
 
     async def _receive_messages(self) -> None:
-        """Receive and process WebSocket messages with routing."""
+        """Receive and process WebSocket messages with Socket.IO routing."""
         try:
             while self._ws and self._state == ConnectionState.CONNECTED:
                 try:
@@ -228,27 +332,33 @@ class ConnectionService(BaseService):
                         self._ws.recv(), timeout=30.0
                     )
 
-                    # Parse JSON message
-                    try:
-                        data = json.loads(message)
-                        self.logger.debug(f"Received message: {data}")
+                    self.logger.debug(f"Received raw message: {message}")
+                    
+                    # Parse Socket.IO message
+                    parsed = self._parse_socketio_message(message)
+                    
+                    if parsed:
+                        event_name, event_data = parsed
+                        self.logger.debug(f"Parsed Socket.IO event '{event_name}': {event_data}")
                         
-                        # Route the message
-                        await self._route_message(data)
+                        # Route the event
+                        await self._route_socketio_event(event_name, event_data)
                         
                         # Also call legacy message handler if set
                         if self._message_handler:
                             if asyncio.iscoroutinefunction(self._message_handler):
-                                await self._message_handler(data)
+                                await self._message_handler({"event": event_name, "data": event_data})
                             else:
-                                self._message_handler(data)
-                                
-                    except json.JSONDecodeError as e:
-                        self.logger.error(f"Failed to parse message: {e}")
-                        continue
+                                self._message_handler({"event": event_name, "data": event_data})
 
                 except asyncio.TimeoutError:
-                    # Timeout is normal, just continue
+                    # Send Socket.IO ping to keep connection alive
+                    if self._ws:
+                        try:
+                            await self._ws.send("2")  # Socket.IO ping
+                            self.logger.debug("Sent Socket.IO ping")
+                        except:
+                            pass
                     continue
                 except websockets.ConnectionClosed:
                     self.logger.warning("WebSocket connection closed")
@@ -260,6 +370,33 @@ class ConnectionService(BaseService):
         except Exception as e:
             self.logger.error(f"Error receiving messages: {str(e)}")
             await self._handle_disconnect()
+    
+    async def _route_socketio_event(self, event_name: str, event_data: Any) -> None:
+        """
+        Route Socket.IO event to appropriate handler.
+        
+        Args:
+            event_name: Name of the event
+            event_data: Event payload data
+        """
+        # Check if there are handlers registered for this event
+        if event_name in self._event_handlers:
+            for handler in self._event_handlers[event_name]:
+                try:
+                    if asyncio.iscoroutinefunction(handler):
+                        await handler(event_data)
+                    else:
+                        handler(event_data)
+                except Exception as e:
+                    self.logger.error(f"Event handler error for '{event_name}': {e}")
+        
+        # Also check for pending requests waiting for this event
+        # (Some APIs send response as an event)
+        for request_id, future in list(self._pending_requests.items()):
+            if not future.done() and event_name in request_id:
+                future.set_result(event_data)
+                del self._pending_requests[request_id]
+                break
     
     async def _route_message(self, data: Dict[str, Any]) -> None:
         """
