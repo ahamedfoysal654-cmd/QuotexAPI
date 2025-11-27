@@ -71,58 +71,102 @@ class QuotexAPI:
         # Initialize other services with connection
         self.auth = AuthService(self.config, self.connection)
         self.account = AccountService(self.config, self.connection)
-        self.instrument = InstrumentService(self.config, self.connection)
+        self.instrument = InstrumentService(self.config)  # No connection needed
         self.trading = TradingService(self.config, self.connection)
         self.data = DataService(self.config, self.connection)
 
         self._initialized = False
 
-    async def connect(self) -> UserProfile:
+    async def connect(self) -> None:
         """
-        Connect to Quotex API and authenticate.
+        Connect to Quotex API WebSocket.
 
-        This method initializes all services, authenticates the user,
-        and establishes a WebSocket connection.
+        After connecting, you must call login_with_ssid() to authenticate.
+        
+        Connection flow:
+        1. connect() - Establishes WebSocket, receives handshake (0{...}) and 40
+        2. login_with_ssid() - Sends authorization message with SSID
+        3. Receives s_authorization confirmation
+
+        Raises:
+            ConnectionError: If connection fails.
+
+        Example:
+            >>> await api.connect()
+            >>> await api.login_with_ssid("your_ssid")
+        """
+        self.logger.info("Connecting to Quotex API...")
+
+        # Initialize connection service and establish WebSocket
+        await self.connection.initialize()
+        await self.connection.connect()
+
+        # Initialize other services
+        await self.auth.initialize()
+        await self.account.initialize()
+        await self.instrument.initialize()
+        await self.trading.initialize()
+        await self.data.initialize()
+
+        self._initialized = True
+        self.logger.info("Successfully connected to Quotex API")
+
+    async def login_with_ssid(self, ssid: Optional[str] = None) -> UserProfile:
+        """
+        Authenticate using SSID token.
+
+        Args:
+            ssid: Session ID token. If not provided, uses config.ssid.
 
         Returns:
             UserProfile: Authenticated user profile.
 
         Raises:
             AuthenticationError: If authentication fails.
-            ConnectionError: If connection fails.
 
         Example:
-            >>> profile = await api.connect()
-            >>> print(f"Connected as: {profile.email}")
+            >>> await api.connect()
+            >>> profile = await api.login_with_ssid("your_ssid_token")
         """
-        self.logger.info("Connecting to Quotex API...")
+        if ssid:
+            self.config.ssid = ssid
+        
+        if not self.config.ssid:
+            raise ValueError("SSID token is required")
+        
+        return await self.auth.login_with_ssid(self.config.ssid)
 
-        # Initialize all services
-        await self.auth.initialize()
-        await self.connection.initialize()
-        await self.account.initialize()
-        await self.instrument.initialize()
-        await self.trading.initialize()
-        await self.data.initialize()
+    async def login_with_email(
+        self, 
+        email: Optional[str] = None, 
+        password: Optional[str] = None
+    ) -> UserProfile:
+        """
+        Authenticate using email and password.
 
-        # Authenticate
-        if self.config.ssid:
-            profile = await self.auth.login_with_ssid(self.config.ssid)
-        elif self.config.email and self.config.password:
-            profile = await self.auth.login_with_email(
-                self.config.email, self.config.password
-            )
-        else:
-            raise ValueError("Either (email and password) or ssid must be provided")
+        Args:
+            email: User email. If not provided, uses config.email.
+            password: User password. If not provided, uses config.password.
 
-        # Establish WebSocket connection
-        auth_token = self.auth.ssid
-        await self.connection.connect(auth_token, self._handle_ws_message)
+        Returns:
+            UserProfile: Authenticated user profile.
 
-        self._initialized = True
-        self.logger.info("Successfully connected to Quotex API")
+        Raises:
+            AuthenticationError: If authentication fails.
 
-        return profile
+        Example:
+            >>> await api.connect()
+            >>> profile = await api.login_with_email("user@example.com", "password")
+        """
+        if email:
+            self.config.email = email
+        if password:
+            self.config.password = password
+        
+        if not self.config.email or not self.config.password:
+            raise ValueError("Email and password are required")
+        
+        return await self.auth.login_with_email(self.config.email, self.config.password)
 
     async def disconnect(self) -> None:
         """
@@ -179,6 +223,26 @@ class QuotexAPI:
             >>> print(f"Balance: {balance.amount} {balance.currency}")
         """
         return await self.account.get_active_balance()
+
+    async def get_balances(self) -> dict:
+        """
+        Get all account balances as a dictionary.
+
+        Returns:
+            dict: Dictionary with 'demo' and 'real' balance amounts.
+
+        Example:
+            >>> balances = await api.get_balances()
+            >>> print(f"Demo: ${balances['demo']}, Real: ${balances['real']}")
+        """
+        balance_list = await self.account.get_balances()
+        result = {}
+        for balance in balance_list:
+            if balance.account_type == AccountType.DEMO:
+                result['demo'] = balance.amount
+            elif balance.account_type == AccountType.REAL:
+                result['real'] = balance.amount
+        return result
 
     async def get_all_balances(self) -> List[Balance]:
         """

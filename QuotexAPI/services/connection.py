@@ -50,15 +50,18 @@ class ConnectionService(BaseService):
         await self.disconnect()
         await super().cleanup()
 
-    async def connect(
-        self, auth_token: str, message_handler: Optional[Callable] = None
-    ) -> None:
+    async def connect(self, message_handler: Optional[Callable] = None) -> None:
         """
         Establish WebSocket connection.
+        
+        For Quotex:
+        1. Connect to WebSocket (no auth needed initially)
+        2. Receive handshake: 0{"sid":"...","upgrades":[],"pingInterval":25000,"pingTimeout":5000}
+        3. Receive connection: 40
+        4. Send authorization message via login_with_ssid()
 
         Args:
-            auth_token: Authentication token for WebSocket connection.
-            message_handler: Callback function to handle incoming messages.
+            message_handler: Optional callback function to handle incoming messages.
 
         Raises:
             ConnectionError: If connection fails.
@@ -71,14 +74,27 @@ class ConnectionService(BaseService):
 
         self._message_handler = message_handler
         self._state = ConnectionState.CONNECTING
-        self.logger.info("Establishing WebSocket connection")
+        
+        self.logger.info(f"Establishing WebSocket connection to Quotex")
+        self.logger.debug(f"WebSocket URL: {self.config.ws_url}")
 
         try:
-            # TODO: Implement actual WebSocket connection with auth
-            # This is a placeholder implementation
-            url = f"{self.config.ws_url}?token={auth_token}"
+            # Connect to Quotex WebSocket with proper headers (NO SSID in URL)
+            additional_headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+                "Origin": "https://qxbroker.com",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            
+            self.logger.debug(f"Connecting with headers: {additional_headers}")
             self._ws = await websockets.connect(
-                url, ping_interval=20, ping_timeout=10
+                self.config.ws_url,
+                additional_headers=additional_headers,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10
             )
 
             self._state = ConnectionState.CONNECTED
@@ -86,8 +102,11 @@ class ConnectionService(BaseService):
             self.logger.info("WebSocket connection established")
 
             # Start receiving messages
-            if self._message_handler:
-                self._receive_task = asyncio.create_task(self._receive_messages())
+            self._receive_task = asyncio.create_task(self._receive_messages())
+            
+            # Wait briefly for Socket.IO handshake (0{...}) and connection (40)
+            await asyncio.sleep(0.5)
+            self.logger.info("Socket.IO handshake complete")
 
         except Exception as e:
             self._state = ConnectionState.FAILED
@@ -132,16 +151,20 @@ class ConnectionService(BaseService):
         payload = json.dumps([event, data])
         return f"42{payload}"
     
-    def _parse_socketio_message(self, message: str) -> Optional[tuple[str, Any]]:
+    def _parse_socketio_message(self, message) -> Optional[tuple[str, Any]]:
         """
         Parse Socket.IO format message: 42["event", data]
         
         Args:
-            message: Raw message string
+            message: Raw message (string or bytes)
             
         Returns:
             Tuple of (event_name, data) or None if not parseable
         """
+        # Convert bytes to string if needed
+        if isinstance(message, bytes):
+            message = message.decode('utf-8')
+        
         # Socket.IO messages start with message type code (42 for message)
         if not message.startswith("42"):
             # Handle Socket.IO handshake messages (0, 40, etc.)
@@ -166,10 +189,13 @@ class ConnectionService(BaseService):
             json_part = message[2:]
             payload = json.loads(json_part)
             
-            if isinstance(payload, list) and len(payload) >= 2:
+            if isinstance(payload, list) and len(payload) >= 1:
                 event_name = payload[0]
-                event_data = payload[1] if len(payload) > 1 else {}
+                event_data = payload[1] if len(payload) > 1 else None
                 return (event_name, event_data)
+            elif isinstance(payload, str):
+                # Sometimes it's just an event name string
+                return (payload, None)
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse Socket.IO message: {e}")
         

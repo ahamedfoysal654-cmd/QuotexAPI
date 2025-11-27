@@ -21,7 +21,10 @@ class QuotexConfig(BaseSettings):
     api_url: str = Field(
         default="https://api.quotex.io", validation_alias="QUOTEX_API_URL"
     )
-    ws_url: str = Field(default="wss://ws.quotex.io", validation_alias="QUOTEX_WS_URL")
+    ws_url: str = Field(
+        default="wss://ws2.qxbroker.com/socket.io/?EIO=3&transport=websocket",
+        validation_alias="QUOTEX_WS_URL"
+    )
 
     # Connection Settings
     reconnect_enabled: bool = Field(

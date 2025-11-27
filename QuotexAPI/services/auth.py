@@ -145,13 +145,14 @@ class AuthService(BaseService):
             }
             
             # Subscribe to authorization response before sending
+            # Quotex responds with: 42["s_authorization"]
             auth_future = asyncio.Future()
             
             def handle_auth_response(data):
                 if not auth_future.done():
                     auth_future.set_result(data)
             
-            self._connection.subscribe("authorization", handle_auth_response)
+            self._connection.subscribe("s_authorization", handle_auth_response)
             
             # Send Socket.IO authorization event
             await self._connection.send_socketio_event(
@@ -164,28 +165,49 @@ class AuthService(BaseService):
             try:
                 response = await asyncio.wait_for(auth_future, timeout=30.0)
             finally:
-                self._connection.unsubscribe("authorization", handle_auth_response)
+                self._connection.unsubscribe("s_authorization", handle_auth_response)
             
             # Parse response
-            if not response:
-                raise SessionExpiredError("No authorization response received")
+            # Quotex sends: 42["s_authorization"] or 42["s_authorization", {}]
+            # If we got here, it means we received the event, which indicates success
+            self.logger.debug(f"Authorization response: {response}")
             
             # Check if authorization was successful
-            # Response format depends on Quotex API
-            if response.get("isSuccessful") == False or response.get("error"):
-                error = response.get("message", "SSID login failed")
-                raise SessionExpiredError(error)
+            # If response is None or empty dict, it means just the event name was sent (success)
+            if response is None or (isinstance(response, dict) and not response):
+                # Success - authorization event received
+                pass
+            elif isinstance(response, dict):
+                # Check for error in response
+                if response.get("isSuccessful") == False or response.get("error"):
+                    error = response.get("message", "SSID login failed")
+                    raise SessionExpiredError(error)
 
             self._ssid = ssid
-            self._user_profile = UserProfile(
-                user_id=response.get("user_id", response.get("userId", "")),
-                email=response.get("email", ""),
-                username=response.get("username", response.get("name", "user")),
-                demo_balance=response.get("demo_balance", response.get("demoBalance", 10000.0)),
-                real_balance=response.get("real_balance", response.get("realBalance", 0.0)),
-                active_account="demo" if is_demo else "real",
-                currency=response.get("currency", "USD"),
-            )
+            
+            # Create user profile from response (or defaults if response is None/empty)
+            if response and isinstance(response, dict):
+                self._user_profile = UserProfile(
+                    user_id=response.get("user_id", response.get("userId", "")),
+                    email=response.get("email", ""),
+                    username=response.get("username", response.get("name", "user")),
+                    demo_balance=response.get("demo_balance", response.get("demoBalance", 10000.0)),
+                    real_balance=response.get("real_balance", response.get("realBalance", 0.0)),
+                    active_account="demo" if is_demo else "real",
+                    currency=response.get("currency", "USD"),
+                )
+            else:
+                # Quotex may send just event name with no data - use defaults
+                self._user_profile = UserProfile(
+                    user_id="",
+                    email="",
+                    username="user",
+                    demo_balance=10000.0,
+                    real_balance=0.0,
+                    active_account="demo" if is_demo else "real",
+                    currency="USD",
+                )
+            
             self._is_authenticated = True
 
             self.logger.info(f"Successfully logged in with SSID (demo={is_demo})")

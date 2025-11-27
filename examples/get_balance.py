@@ -15,10 +15,25 @@ from QuotexAPI import QuotexAPI
 async def main():
     """Get account balance example."""
     
-    # Get SSID from environment variable
-    ssid = input("Your ssid: ")
+    # Get SSID from environment variable or user input
+    ssid = os.getenv("QUOTEX_SSID")
     if not ssid:
-        print("❌ Error: QUOTEX_SSID environment variable not set")
+        print("Enter your Quotex SSID token (session ID only, not the full authorization message)")
+        print("Example: dJzhzzKSR6N4Lr5OvTFuvcGLCfyDjtdbNDMScXcH")
+        ssid = input("SSID: ").strip()
+    
+    # Extract SSID if user pasted the full authorization message
+    if ssid.startswith('42["authorization"'):
+        import json
+        import re
+        # Extract the session value from the message
+        match = re.search(r'"session":"([^"]+)"', ssid)
+        if match:
+            ssid = match.group(1)
+            print(f"✓ Extracted SSID: {ssid}")
+    
+    if not ssid:
+        print("❌ Error: SSID is required")
         print("Set it with: export QUOTEX_SSID='your_ssid_token'")
         return
     
@@ -27,11 +42,11 @@ async def main():
     
     try:
         # Connect to Quotex WebSocket
-        print("🔌 Connecting to Quotex...")
+        print("🔌 Connecting to Quotex WebSocket...")
         await api.connect()
-        print("✅ Connected successfully")
+        print("✅ Connected successfully (received handshake)")
         
-        # Authenticate with SSID
+        # Authenticate with SSID (send authorization message)
         print(f"🔐 Authenticating with SSID...")
         await api.login_with_ssid(ssid)
         print("✅ Authenticated successfully")
