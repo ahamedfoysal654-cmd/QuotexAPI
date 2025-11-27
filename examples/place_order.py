@@ -11,17 +11,37 @@ This example demonstrates how to:
 
 import asyncio
 import os
+import re
 from QuotexAPI import QuotexAPI
 
 
 async def main():
     """Place order example."""
     
-    # Get SSID from environment variable
+    # Get SSID from environment variable or user input
     ssid = os.getenv("QUOTEX_SSID")
     if not ssid:
-        print("❌ Error: QUOTEX_SSID environment variable not set")
-        print("Set it with: export QUOTEX_SSID='your_ssid_token'")
+        print("\nPaste your full SSID (you can paste the entire browser value):")
+        print("Example: 42[\"authorization\",{\"session\":\"dJzhzzKSR6N4Lr5OvTFuvcGLCfyDjtdbNDMScXcH\",\"isDemo\":1,\"tournamentId\":0}]")
+        print("Or just: dJzhzzKSR6N4Lr5OvTFuvcGLCfyDjtdbNDMScXcH\n")
+        ssid = input("SSID: ").strip()
+    
+    # Extract SSID if user pasted the full authorization message
+    if '"session":"' in ssid or '"session":' in ssid:
+        match = re.search(r'"session"\s*:\s*"([^"]+)"', ssid)
+        if match:
+            extracted = match.group(1)
+            print(f"✓ Extracted SSID token: {extracted[:20]}...")
+            ssid = extracted
+    elif ssid.startswith('42['):
+        match = re.search(r'["\']([a-zA-Z0-9_-]{30,})["\']', ssid)
+        if match:
+            extracted = match.group(1)
+            print(f"✓ Extracted SSID token: {extracted[:20]}...")
+            ssid = extracted
+    
+    if not ssid:
+        print("❌ Error: SSID is required")
         return
     
     # Initialize API
