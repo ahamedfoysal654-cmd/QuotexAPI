@@ -164,6 +164,12 @@ class AuthService(BaseService):
             # Wait for authorization response
             try:
                 response = await asyncio.wait_for(auth_future, timeout=30.0)
+            except asyncio.TimeoutError:
+                self.logger.error("Authorization timeout - no response received")
+                raise SessionExpiredError(
+                    "Authorization timeout. Your SSID may be expired. "
+                    "Please get a fresh SSID from your browser (F12 > Application > Cookies > ssid)"
+                )
             finally:
                 self._connection.unsubscribe("s_authorization", handle_auth_response)
             

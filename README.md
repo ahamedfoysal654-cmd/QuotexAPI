@@ -64,6 +64,17 @@ pip install -e ".[dev]"
 
 ## 📖 Quick Start
 
+### Test Your SSID First! ⭐
+
+Before running any examples, test your SSID token:
+
+```bash
+# Get your SSID from browser (F12 > Application > Cookies > ssid)
+python examples/test_ssid.py
+```
+
+This validates your SSID and provides clear feedback if it's expired. See [docs/GET_SSID.md](docs/GET_SSID.md) for detailed instructions on obtaining your SSID.
+
 ### Basic Usage
 
 ```python

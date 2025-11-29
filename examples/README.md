@@ -19,6 +19,22 @@ Before running the examples, make sure you have:
 
 ## Examples
 
+### Test Your SSID First! (Recommended)
+
+#### 0. Test SSID (`test_ssid.py`) ⭐ **START HERE**
+
+Before running other examples, validate your SSID token:
+- Tests WebSocket connection
+- Verifies SSID authentication
+- Provides clear error messages if SSID is expired
+- Shows step-by-step connection status
+
+```bash
+python examples/test_ssid.py
+```
+
+This will help you ensure your SSID is valid before trying the other examples!
+
 ### Quick Start Examples (Recommended)
 
 #### 1. Get Balance (`get_balance.py`)

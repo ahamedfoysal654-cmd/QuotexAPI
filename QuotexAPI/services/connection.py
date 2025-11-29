@@ -386,8 +386,15 @@ class ConnectionService(BaseService):
                         except:
                             pass
                     continue
-                except websockets.ConnectionClosed:
-                    self.logger.warning("WebSocket connection closed")
+                except websockets.ConnectionClosed as e:
+                    self.logger.warning(f"WebSocket connection closed: {e.code} - {e.reason}")
+                    # If closed during pending requests, fail them with proper error
+                    for request_id, future in list(self._pending_requests.items()):
+                        if not future.done():
+                            future.set_exception(
+                                WebSocketError(f"Connection closed by server (code: {e.code}). SSID may be expired.")
+                            )
+                            del self._pending_requests[request_id]
                     await self._handle_disconnect()
                     break
 
