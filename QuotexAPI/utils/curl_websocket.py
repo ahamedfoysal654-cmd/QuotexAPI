@@ -110,6 +110,8 @@ class CurlWebSocketTransport:
         """Read messages from curl stdout in background thread."""
         buffer = b""
         
+        print("[CURL READER] Starting message reader thread")
+        
         while self.running and self.process and self.process.poll() is None:
             try:
                 # Read raw bytes
@@ -156,6 +158,8 @@ class CurlWebSocketTransport:
                             message_detected = True
                 
                 if message_detected:
+                    print(f"[CURL READER] Complete message received: {text[:200]}...")
+                    
                     # Put message in queue
                     self.message_queue.put(text)
                     
@@ -171,9 +175,12 @@ class CurlWebSocketTransport:
             except Exception as e:
                 if self.running:
                     logger.error(f"Read error: {e}")
+                    print(f"[CURL READER] Error: {e}")
                     if self._on_error:
                         self._on_error(e)
                 break
+        
+        print("[CURL READER] Reader thread exiting")
         
         # Connection closed
         if self._on_close:
