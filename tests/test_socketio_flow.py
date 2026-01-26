@@ -18,6 +18,7 @@ async def test_connection():
         "Origin": "https://qxbroker.com",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     
@@ -149,6 +150,7 @@ async def test_with_authorization():
         "Origin": "https://qxbroker.com",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     
