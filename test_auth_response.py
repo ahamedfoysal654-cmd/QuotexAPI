@@ -26,13 +26,14 @@ async def main():
     
     api = QuotexAPI(ssid=ssid, is_demo=True)
     
-    # Set message callback to see ALL messages
-    api.connection._ws.set_on_message(message_callback)
-    
     try:
         print("Connecting...")
         await api.connect()
         print("Connected!\n")
+        
+        # Set message callback AFTER connecting
+        if api.connection._ws:
+            api.connection._ws.set_on_message(message_callback)
         
         print("Waiting for messages (10 seconds)...")
         await asyncio.sleep(10)
