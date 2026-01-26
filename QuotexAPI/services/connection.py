@@ -444,10 +444,12 @@ class ConnectionService(BaseService):
                         # No message received, continue
                         continue
 
+                    print(f"[DEBUG] Received raw message: {message[:200]}...")
                     self.logger.debug(f"Received raw message: {message}")
                     
                     # Handle Socket.IO ping
                     if message == '2':
+                        print("[DEBUG] Received ping, sending pong")
                         self.logger.debug("Received Socket.IO ping, sending pong")
                         await self.send_raw('3')
                         continue
@@ -457,6 +459,7 @@ class ConnectionService(BaseService):
                     
                     if parsed:
                         event_name, event_data = parsed
+                        print(f"[DEBUG] Parsed event '{event_name}': {str(event_data)[:200]}...")
                         self.logger.debug(f"Parsed Socket.IO event '{event_name}': {event_data}")
                         
                         # Route the event
