@@ -40,37 +40,58 @@ class CurlWebSocketTransport:
         
     def connect(self) -> bool:
         """
-        Connect via HTTP polling.
+        Connect via HTTP polling with retry logic.
         
         Returns:
             True if connection successful, False otherwise
         """
         print("[HTTP POLLING] Connecting...")
-        try:
-            # Convert WebSocket URL to HTTP polling URL
-            base_url = self.url.replace('wss://', 'https://').replace('ws://', 'http://')
-            base_url = base_url.replace('transport=websocket', 'transport=polling')
-            self.polling_url = base_url
-            
-            # Create session with browser impersonation
-            self.session = requests.Session(impersonate="chrome110")
-            
-            headers = {
-                'Origin': 'https://qxbroker.com',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': '*/*',
-                **self.headers
-            }
-            
-            # Initial handshake
-            print(f"[HTTP POLLING] GET {base_url}")
-            response = self.session.get(base_url, headers=headers, timeout=10)
-            
-            if response.status_code != 200:
-                logger.error(f"Handshake failed: {response.status_code}")
-                return False
-            
-            print(f"[HTTP POLLING] Handshake response: {response.text[:200]}")
+        
+        # Retry logic to deal with Cloudflare's intermittent blocking
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    print(f"[HTTP POLLING] Retry attempt {attempt + 1}/{max_retries}...")
+                    time.sleep(retry_delay * attempt)  # Exponential backoff
+                
+                # Convert WebSocket URL to HTTP polling URL
+                base_url = self.url.replace('wss://', 'https://').replace('ws://', 'http://')
+                base_url = base_url.replace('transport=websocket', 'transport=polling')
+                self.polling_url = base_url
+                
+                # Create session with browser impersonation
+                self.session = requests.Session(impersonate="chrome110")
+                
+                headers = {
+                    'Origin': 'https://qxbroker.com',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    **self.headers
+                }
+                
+                # Initial handshake
+                print(f"[HTTP POLLING] GET {base_url}")
+                response = self.session.get(base_url, headers=headers, timeout=10)
+                
+                if response.status_code == 403:
+                    print(f"[HTTP POLLING] Cloudflare blocked (403), attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        logger.error("Handshake blocked by Cloudflare after all retries")
+                        return False
+                
+                if response.status_code != 200:
+                    logger.error(f"Handshake failed: {response.status_code}")
+                    if attempt < max_retries - 1:
+                        continue
+                    return False
+                
+                print(f"[HTTP POLLING] Handshake response: {response.text[:200]}")
             
             # Parse polling response format: <length>:<message><length>:<message>...
             # Example: 96:0{"sid":"..."}2:40
@@ -88,18 +109,6 @@ class CurlWebSocketTransport:
             
             if not self.sid:
                 logger.error("Failed to extract SID from handshake")
-                return False
-            
-            # Socket.IO polling protocol: after receiving messages from GET,
-            # must POST to acknowledge before next GET
-            print("[HTTP POLLING] Acknowledging handshake messages...")
-            ack_url = f"{self.polling_url}&sid={self.sid}"
-            ack_response = self.session.post(ack_url, headers=headers, data="", timeout=10)
-            print(f"[HTTP POLLING] Ack response: {ack_response.status_code}")
-            
-            if ack_response.status_code != 200:
-                logger.error(f"Failed to acknowledge handshake: {ack_response.status_code}")
-                print(f"[HTTP POLLING] Ack failed: {ack_response.text[:200]}")
                 return False
             
             # Process initial messages (like namespace connect "2:40")
@@ -167,17 +176,11 @@ class CurlWebSocketTransport:
             try:
                 url = f"{self.polling_url}&sid={self.sid}"
                 
-                # Poll for messages
+                # Poll for messages (long-polling GET)
                 response = self.session.get(url, headers=headers, timeout=25)
                 
                 if response.status_code == 200 and response.text:
                     print(f"[HTTP POLLING] Received: {response.text[:300]}")
-                    
-                    # Socket.IO polling protocol: after receiving messages,
-                    # we must POST to acknowledge receipt before next GET
-                    print("[HTTP POLLING] Acknowledging receipt...")
-                    ack_response = self.session.post(url, headers=headers, data="", timeout=10)
-                    print(f"[HTTP POLLING] Ack status: {ack_response.status_code}")
                     
                     # Parse messages
                     messages = self._parse_polling_payload(response.text)
