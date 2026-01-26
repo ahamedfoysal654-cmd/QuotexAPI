@@ -1,9 +1,11 @@
 """
 Curl-based WebSocket transport for bypassing Cloudflare bot protection.
-Uses curl subprocess as transport layer since it bypasses Cloudflare successfully.
+Uses curl subprocess for RECEIVING (WebSocket) and curl_cffi for SENDING (HTTP polling).
 
-Note: This uses curl with --http1.1 upgrade to establish WebSocket connection.
-For bidirectional communication, we write to stdin and read from stdout.
+This hybrid approach works because:
+- Curl subprocess can receive WebSocket messages (bypasses Cloudflare)
+- Curl_cffi can send via HTTP POST to Socket.IO polling endpoint (bypasses Cloudflare)
+- Socket.IO supports mixed transports (receive via WS, send via polling)
 """
 
 import subprocess
@@ -11,17 +13,18 @@ import threading
 import queue
 import time
 from typing import Optional, Dict, Callable
+from curl_cffi import requests
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class CurlWebSocketTransport:
-    """WebSocket transport using curl subprocess to bypass Cloudflare."""
+    """Hybrid WebSocket transport: curl subprocess for receiving, curl_cffi HTTP for sending."""
     
     def __init__(self, url: str, headers: Optional[Dict[str, str]] = None):
         """
-        Initialize curl WebSocket transport.
+        Initialize hybrid transport.
         
         Args:
             url: WebSocket URL (wss://...)
@@ -36,6 +39,11 @@ class CurlWebSocketTransport:
         self._on_message: Optional[Callable] = None
         self._on_error: Optional[Callable] = None
         self._on_close: Optional[Callable] = None
+        
+        # For HTTP polling (sending)
+        self.session = None
+        self.sid = None  # Socket.IO session ID
+        self.polling_url = None
         
     def connect(self) -> bool:
         """
@@ -114,6 +122,17 @@ class CurlWebSocketTransport:
                 self._on_error(e)
             return False
     
+    def _extract_sid_from_handshake(self, message: str) -> Optional[str]:
+        """Extract Socket.IO session ID from handshake message."""
+        try:
+            if message.startswith('0{'):
+                import json
+                handshake = json.loads(message[1:])
+                return handshake.get('sid')
+        except:
+            pass
+        return None
+    
     def _read_messages(self):
         """Read messages from curl stdout in background thread."""
         buffer = b""
@@ -143,6 +162,20 @@ class CurlWebSocketTransport:
                 if text.startswith('0{'):
                     if text.count('{') == text.count('}') and text.count('{') > 0:
                         message_detected = True
+                        # Extract SID for HTTP polling
+                        if not self.sid:
+                            self.sid = self._extract_sid_from_handshake(text)
+                            if self.sid:
+                                # Setup HTTP polling URL
+                                base_url = self.url.replace('wss://', 'https://').replace('/socket.io/?', '/socket.io/?')
+                                if '?' in base_url:
+                                    self.polling_url = base_url.replace('transport=websocket', 'transport=polling')
+                                else:
+                                    self.polling_url = base_url + '?EIO=3&transport=polling'
+                                print(f"[CURL READER] Extracted SID: {self.sid}, polling URL: {self.polling_url}")
+                                
+                                # Create curl_cffi session for sending
+                                self.session = requests.Session(impersonate="chrome110")
                         
                 # Namespace connect/disconnect: 40, 41
                 elif text in ['40', '41']:
@@ -215,68 +248,58 @@ class CurlWebSocketTransport:
     
     def send(self, message: str) -> bool:
         """
-        Send message through WebSocket.
-        
-        For WebSocket frames, we need to wrap the message properly.
-        Since curl handles the WebSocket protocol, we send the raw frame.
+        Send message via HTTP polling (using curl_cffi).
         
         Args:
-            message: Message string to send
+            message: Socket.IO message string to send (e.g., "42[...]")
             
         Returns:
             True if sent successfully, False otherwise
         """
-        print(f"[CURL DEBUG] send() called with message: {message[:100]}...")
+        print(f"[HTTP SEND] Attempting to send via HTTP polling: {message[:100]}...")
         
-        if not self.process or not self.process.stdin:
-            logger.error("Cannot send: not connected")
-            print("[CURL DEBUG] ERROR: Not connected")
+        if not self.session or not self.sid or not self.polling_url:
+            print("[HTTP SEND] ERROR: Not ready (no session/sid/url)")
+            logger.error("Cannot send: HTTP polling not initialized")
             return False
             
         try:
-            print("[CURL DEBUG] Encoding message and creating WebSocket frame...")
+            # Add sid to URL
+            url_with_sid = f"{self.polling_url}&sid={self.sid}"
             
-            # Encode message as bytes
-            msg_bytes = message.encode('utf-8')
+            # Prepare headers
+            headers = {
+                'Origin': 'https://qxbroker.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Content-Type': 'text/plain;charset=UTF-8',
+                'Accept': '*/*',
+                **self.headers
+            }
             
-            # Create WebSocket text frame (FIN=1, opcode=1 for text)
-            # Simple WebSocket frame: FIN(1) + RSV(000) + OPCODE(0001) = 0x81
-            # Then mask bit (1) + payload length
-            frame = bytearray()
-            frame.append(0x81)  # FIN + text frame
+            print(f"[HTTP SEND] POST to {url_with_sid[:100]}...")
+            print(f"[HTTP SEND] Data: {message}")
             
-            payload_len = len(msg_bytes)
-            if payload_len < 126:
-                frame.append(0x80 | payload_len)  # Mask bit + length
-            elif payload_len < 65536:
-                frame.append(0x80 | 126)
-                frame.extend(payload_len.to_bytes(2, 'big'))
+            # Send via HTTP POST
+            response = self.session.post(
+                url_with_sid,
+                headers=headers,
+                data=message,
+                timeout=10
+            )
+            
+            print(f"[HTTP SEND] Response status: {response.status_code}")
+            print(f"[HTTP SEND] Response: {response.text[:200]}")
+            
+            if response.status_code == 200:
+                logger.debug(f"Sent via HTTP polling: {message[:100]}...")
+                return True
             else:
-                frame.append(0x80 | 127)
-                frame.extend(payload_len.to_bytes(8, 'big'))
-            
-            # Masking key (required for client-to-server frames)
-            import os
-            mask = os.urandom(4)
-            frame.extend(mask)
-            
-            # Masked payload
-            for i, byte in enumerate(msg_bytes):
-                frame.append(byte ^ mask[i % 4])
-            
-            print(f"[CURL DEBUG] Frame created: {len(frame)} bytes, writing to stdin...")
-            
-            # Write to stdin
-            self.process.stdin.write(frame)
-            self.process.stdin.flush()
-            
-            print(f"[CURL DEBUG] Frame written and flushed successfully")
-            logger.debug(f"Sent WebSocket frame ({len(frame)} bytes): {message[:100]}...")
-            return True
-            
+                logger.error(f"HTTP send failed: {response.status_code} - {response.text}")
+                return False
+                
         except Exception as e:
-            print(f"[CURL DEBUG] ERROR in send(): {e}")
-            logger.error(f"Send error: {e}")
+            print(f"[HTTP SEND] ERROR: {e}")
+            logger.error(f"HTTP send error: {e}")
             if self._on_error:
                 self._on_error(e)
             return False
