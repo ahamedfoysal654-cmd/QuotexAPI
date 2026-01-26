@@ -46,33 +46,51 @@ class CurlWebSocketTransport:
         logger.debug(f"URL: {self.url}")
         
         try:
-            # Create session with browser impersonation
-            session = requests.Session(impersonate="chrome110")
+            # Try different browser impersonations that might bypass Cloudflare
+            impersonations = ["chrome120", "chrome116", "chrome110", "chrome107", "chrome104"]
+            last_error = None
             
-            # Prepare headers
-            headers = {
-                'Origin': 'https://qxbroker.com',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
-                **self.headers
-            }
+            for impersonate in impersonations:
+                try:
+                    logger.info(f"Trying impersonation: {impersonate}")
+                    
+                    # Create session with browser impersonation
+                    session = requests.Session(impersonate=impersonate)
+                    
+                    # Prepare headers matching the working curl command
+                    headers = {
+                        'Origin': 'https://qxbroker.com',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 OPR/126.0.0.0',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache',
+                        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits',
+                        **self.headers
+                    }
+                    
+                    # Connect to WebSocket
+                    self.ws = session.ws_connect(self.url, headers=headers)
+                    
+                    self.running = True
+                    
+                    # Start reader thread
+                    self.reader_thread = threading.Thread(
+                        target=self._read_messages,
+                        daemon=True,
+                        name="CurlWebSocketReader"
+                    )
+                    self.reader_thread.start()
+                    
+                    logger.info(f"Curl WebSocket connection established with {impersonate}")
+                    return True
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.debug(f"Impersonation {impersonate} failed: {e}")
+                    continue
             
-            # Connect to WebSocket
-            self.ws = session.ws_connect(self.url, headers=headers)
-            
-            self.running = True
-            
-            # Start reader thread
-            self.reader_thread = threading.Thread(
-                target=self._read_messages,
-                daemon=True,
-                name="CurlWebSocketReader"
-            )
-            self.reader_thread.start()
-            
-            logger.info("Curl WebSocket connection established")
-            return True
+            # All impersonations failed
+            raise last_error or Exception("All browser impersonations failed")
             
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
