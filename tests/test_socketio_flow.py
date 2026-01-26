@@ -104,7 +104,19 @@ async def test_connection():
 async def test_with_authorization():
     """Test connection with authorization message."""
     
-    ssid = input("Enter your SSID (or press Enter to skip authorization): ").strip()
+    ssid_input = input("Enter your SSID token (or press Enter to skip authorization): ").strip()
+    
+    # Extract SSID if user pasted the full Socket.IO message
+    ssid = ssid_input
+    if '"session":"' in ssid_input:
+        # Extract from: 42["authorization",{"session":"TOKEN_HERE","isDemo":1,...}]
+        import re
+        match = re.search(r'"session":"([^"]+)"', ssid_input)
+        if match:
+            ssid = match.group(1)
+            print(f"📝 Extracted SSID: {ssid[:20]}...")
+    elif not ssid_input:
+        ssid = ""
     
     uri = "wss://ws2.qxbroker.com/socket.io/?EIO=3&transport=websocket"
     headers = {
@@ -114,7 +126,7 @@ async def test_with_authorization():
     
     print(f"🔌 Connecting to {uri}...")
     
-    async with websockets.connect(uri, extra_headers=headers) as websocket:
+    async with websockets.connect(uri, additional_headers=headers) as websocket:
         print("✅ Connected!")
         
         async def receive_and_respond():
