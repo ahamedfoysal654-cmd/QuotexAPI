@@ -77,16 +77,38 @@ class CurlWebSocketTransport:
             messages = self._parse_polling_payload(response.text)
             
             # Extract SID from handshake
+            handshake_msg = None
             for msg in messages:
                 if msg.startswith('0{'):
                     handshake = json_module.loads(msg[1:])
                     self.sid = handshake.get('sid')
+                    handshake_msg = msg
                     print(f"[HTTP POLLING] Got SID: {self.sid}")
                     break
             
             if not self.sid:
                 logger.error("Failed to extract SID from handshake")
                 return False
+            
+            # Socket.IO polling protocol: after receiving messages from GET,
+            # must POST to acknowledge before next GET
+            print("[HTTP POLLING] Acknowledging handshake messages...")
+            ack_url = f"{self.polling_url}&sid={self.sid}"
+            ack_response = self.session.post(ack_url, headers=headers, data="", timeout=10)
+            print(f"[HTTP POLLING] Ack response: {ack_response.status_code}")
+            
+            if ack_response.status_code != 200:
+                logger.error(f"Failed to acknowledge handshake: {ack_response.status_code}")
+                print(f"[HTTP POLLING] Ack failed: {ack_response.text[:200]}")
+                return False
+            
+            # Process initial messages (like namespace connect "2:40")
+            for msg in messages:
+                if msg != handshake_msg and self._on_message:
+                    try:
+                        self._on_message(msg)
+                    except Exception as e:
+                        logger.error(f"Callback error: {e}")
             
             self.running = True
             
