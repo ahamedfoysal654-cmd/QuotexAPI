@@ -29,7 +29,7 @@ async def test_websocket():
     try:
         async with websockets.connect(
             url,
-            extra_headers=headers,
+            additional_headers=headers,
             ssl=ssl_context,
             ping_interval=None,
             ping_timeout=None
