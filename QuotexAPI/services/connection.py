@@ -276,7 +276,9 @@ class ConnectionService(BaseService):
 
         try:
             loop = asyncio.get_event_loop()
+            print(f"[DEBUG] About to send raw: {message[:100]}...")
             await loop.run_in_executor(None, self._ws.send, message)
+            print(f"[DEBUG] Raw send completed")
             self.logger.info(f"Sent raw message: {message[:100]}...")
         except Exception as e:
             self.logger.error(f"Failed to send message: {str(e)}")
@@ -313,8 +315,10 @@ class ConnectionService(BaseService):
             # Format in Socket.IO format: 42["event", data]
             socketio_msg = self._format_socketio_message(event, data)
             
+            print(f"[DEBUG] Sending Socket.IO event '{event}': {socketio_msg[:200]}...")
             self.logger.info(f"Sending Socket.IO event '{event}': {socketio_msg[:200]}...")
             await self.send_raw(socketio_msg)
+            print(f"[DEBUG] Socket.IO event '{event}' sent successfully")
             self.logger.info(f"Socket.IO event '{event}' sent successfully")
             
             if expect_response:
