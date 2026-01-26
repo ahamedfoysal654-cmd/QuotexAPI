@@ -87,18 +87,20 @@ class TradingService(BaseService):
             
             self.logger.info(f"Sending order: {order_data}")
             
-            # Subscribe to multiple possible response events
+            # Subscribe to ACK response
             order_future = asyncio.Future()
             
-            def handle_order_response(data):
-                self.logger.info(f"Received order response: {data}")
+            def handle_ack_response(data):
+                self.logger.info(f"Received ACK response: {data}")
                 if not order_future.done():
                     order_future.set_result(data)
             
-            # Subscribe to possible response event names
-            self._connection.subscribe("orders/open", handle_order_response)
-            self._connection.subscribe("order/created", handle_order_response)
-            self._connection.subscribe("trade_created", handle_order_response)
+            # Subscribe to the generic ACK response event
+            self._connection.subscribe("_ack_response", handle_ack_response)
+            
+            # Also subscribe to possible direct event responses
+            self._connection.subscribe("orders/open", handle_ack_response)
+            self._connection.subscribe("order/created", handle_ack_response)
             
             # Send Socket.IO order open event
             await self._connection.send_socketio_event(
@@ -111,9 +113,9 @@ class TradingService(BaseService):
             try:
                 response = await asyncio.wait_for(order_future, timeout=30.0)
             finally:
-                self._connection.unsubscribe("orders/open", handle_order_response)
-                self._connection.unsubscribe("order/created", handle_order_response)
-                self._connection.unsubscribe("trade_created", handle_order_response)
+                self._connection.unsubscribe("_ack_response", handle_ack_response)
+                self._connection.unsubscribe("orders/open", handle_ack_response)
+                self._connection.unsubscribe("order/created", handle_ack_response)
             
             # Parse response
             if not response:
@@ -121,24 +123,37 @@ class TradingService(BaseService):
             
             self.logger.info(f"Trade response: {response}")
             
-            # Check for errors
+            # Check for errors in response
             if isinstance(response, dict):
-                if response.get("isSuccessful") == False or response.get("error"):
+                # Check various error fields
+                if response.get("error") or response.get("isSuccessful") == False:
                     error = response.get("message") or response.get("error") or "Trade placement failed"
                     raise TradeError(error)
             
             # Parse response into Trade object
             now = datetime.now()
             
-            # Handle different response formats
+            # Parse the Quotex response format
             if isinstance(response, dict):
-                order_id = str(response.get("id") or response.get("orderId") or response.get("order_id") or request_id)
-                open_price = response.get("openPrice") or response.get("open_price") or response.get("price") or 0.0
-                payout = response.get("percent") or response.get("payout") or response.get("profit_percent") or 85.0
+                order_id = str(response.get("id", request_id))
+                open_price = float(response.get("openPrice", 0.0))
+                close_price = float(response.get("closePrice", 0.0)) if response.get("closePrice") else None
+                payout = float(response.get("percentProfit", 85.0))
+                profit = float(response.get("profit", 0.0))
+                
+                # Parse status based on closePrice
+                if close_price and close_price > 0:
+                    # Trade already closed (shouldn't happen)
+                    status = TradeStatus.WIN if profit > 0 else TradeStatus.LOSS
+                else:
+                    status = TradeStatus.ACTIVE
             else:
                 order_id = str(request_id)
                 open_price = 0.0
+                close_price = None
                 payout = 85.0
+                profit = 0.0
+                status = TradeStatus.ACTIVE
             
             trade = Trade(
                 order_id=order_id,
@@ -146,13 +161,13 @@ class TradingService(BaseService):
                 direction=trade_request.direction,
                 amount=trade_request.amount,
                 expiry=trade_request.expiry,
-                status=TradeStatus.ACTIVE,
-                result=None,
-                profit=None,
+                status=status,
+                result=None if status == TradeStatus.ACTIVE else ("win" if profit > 0 else "loss"),
+                profit=profit if profit != 0.0 else None,
                 open_price=open_price,
-                close_price=None,
+                close_price=close_price,
                 open_time=now,
-                close_time=None,
+                close_time=None if status == TradeStatus.ACTIVE else now + timedelta(seconds=trade_request.expiry),
                 payout_percentage=payout,
             )
 
