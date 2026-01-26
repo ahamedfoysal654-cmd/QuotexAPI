@@ -22,9 +22,11 @@ async def test_connection():
     }
     
     print(f"🔌 Connecting to {uri}...")
+    print(f"📋 Headers: {headers}")
     
-    async with websockets.connect(uri, extra_headers=headers) as websocket:
-        print("✅ Connected!")
+    try:
+        async with websockets.connect(uri, additional_headers=headers) as websocket:
+            print("✅ Connected!")
         
         # Expected message sequence based on the screenshot:
         # 1. Server sends: 0{"sid":"...","upgrades":[],"pingInterval":25000,"pingTimeout":5000}
@@ -99,6 +101,12 @@ async def test_connection():
             print(f"\n❌ Error: {e}")
             
         print(f"\n📊 Total messages received: {message_count}")
+    except Exception as e:
+        print(f"❌ Connection failed: {e}")
+        print(f"   This might be due to:")
+        print(f"   1. Missing authentication cookies in HTTP headers")
+        print(f"   2. Server requires pre-authenticated session")
+        print(f"   3. Need to connect through browser first to get session")
 
 
 async def test_with_authorization():
