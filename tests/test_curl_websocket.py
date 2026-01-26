@@ -199,7 +199,8 @@ def main():
                 
                 if message:
                     message_count += 1
-                    print(f"\n📥 [{message_count}] {message[:150]
+                    print(f"\n📥 [{message_count}]")
+                    message[:150]
                     print(f"\n📥 {message}")
                     
                     if message.startswith('0{'):

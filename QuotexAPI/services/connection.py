@@ -6,17 +6,15 @@ import re
 from typing import Callable, Optional, Dict, Any
 from uuid import uuid4
 
-import websockets
-from websockets.client import WebSocketClientProtocol
-
 from ..config import QuotexConfig
 from ..enums import ConnectionState
 from ..exceptions import ConnectionError, ReconnectError, WebSocketError
+from ..utils.curl_websocket import CurlWebSocketTransport
 from .base import BaseService
 
 
 class ConnectionService(BaseService):
-    """WebSocket connection service with Socket.IO message routing."""
+    """WebSocket connection service with Socket.IO message routing using curl transport."""
 
     def __init__(self, config: QuotexConfig):
         """
@@ -26,7 +24,7 @@ class ConnectionService(BaseService):
             config: Configuration instance.
         """
         super().__init__(config)
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[CurlWebSocketTransport] = None
         self._state = ConnectionState.DISCONNECTED
         self._reconnect_attempts = 0
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -52,7 +50,7 @@ class ConnectionService(BaseService):
 
     async def connect(self, message_handler: Optional[Callable] = None) -> None:
         """
-        Establish WebSocket connection.
+        Establish WebSocket connection using curl transport (bypasses Cloudflare).
         
         For Quotex:
         1. Connect to WebSocket (no auth needed initially)
@@ -75,31 +73,42 @@ class ConnectionService(BaseService):
         self._message_handler = message_handler
         self._state = ConnectionState.CONNECTING
         
-        self.logger.info(f"Establishing WebSocket connection to Quotex")
+        self.logger.info(f"Establishing WebSocket connection to Quotex via curl")
         self.logger.debug(f"WebSocket URL: {self.config.ws_url}")
 
         try:
-            # Connect to Quotex WebSocket with proper headers (NO SSID in URL)
-            additional_headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            # Headers for curl transport (bypasses Cloudflare bot protection)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 OPR/126.0.0.0",
                 "Origin": "https://qxbroker.com",
                 "Cache-Control": "no-cache",
                 "Pragma": "no-cache",
                 "Accept-Language": "en-US,en;q=0.9",
             }
             
-            self.logger.debug(f"Connecting with headers: {additional_headers}")
-            self._ws = await websockets.connect(
-                self.config.ws_url,
-                additional_headers=additional_headers,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=10
-            )
+            # Create curl WebSocket transport
+            self._ws = CurlWebSocketTransport(self.config.ws_url, headers)
+            
+            # Set up message callback
+            def on_message(msg):
+                # Queue message for async processing
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_message(msg),
+                    asyncio.get_event_loop()
+                )
+            
+            self._ws.set_on_message(on_message)
+            
+            # Connect (runs in thread)
+            loop = asyncio.get_event_loop()
+            connected = await loop.run_in_executor(None, self._ws.connect)
+            
+            if not connected:
+                raise ConnectionError("Failed to establish curl WebSocket connection")
 
             self._state = ConnectionState.CONNECTED
             self._reconnect_attempts = 0
-            self.logger.info("WebSocket connection established")
+            self.logger.info("WebSocket connection established via curl")
 
             # Start receiving messages
             self._receive_task = asyncio.create_task(self._receive_messages())
@@ -130,7 +139,7 @@ class ConnectionService(BaseService):
                 pass
 
         if self._ws:
-            await self._ws.close()
+            self._ws.close()
             self._ws = None
 
         self._state = ConnectionState.DISCONNECTED
@@ -201,6 +210,27 @@ class ConnectionService(BaseService):
         
         return None
     
+    async def send_raw(self, message: str) -> None:
+        """
+        Send raw message through WebSocket.
+
+        Args:
+            message: Raw message string to send.
+
+        Raises:
+            WebSocketError: If send fails.
+        """
+        if self._state != ConnectionState.CONNECTED or not self._ws:
+            raise WebSocketError("Not connected to WebSocket")
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._ws.send, message)
+            self.logger.debug(f"Sent raw message: {message[:100]}...")
+        except Exception as e:
+            self.logger.error(f"Failed to send message: {str(e)}")
+            raise WebSocketError(f"Failed to send message: {str(e)}") from e
+    
     async def send_message(self, message: dict) -> None:
         """
         Send message through WebSocket without expecting response.
@@ -211,15 +241,7 @@ class ConnectionService(BaseService):
         Raises:
             WebSocketError: If send fails.
         """
-        if self._state != ConnectionState.CONNECTED or not self._ws:
-            raise WebSocketError("Not connected to WebSocket")
-
-        try:
-            await self._ws.send(json.dumps(message))
-            self.logger.debug(f"Sent message: {message}")
-        except Exception as e:
-            self.logger.error(f"Failed to send message: {str(e)}")
-            raise WebSocketError(f"Failed to send message: {str(e)}") from e
+        await self.send_raw(json.dumps(message))
     
     async def send_socketio_event(self, event: str, data: Any, expect_response: bool = False) -> Optional[Any]:
         """
@@ -352,13 +374,27 @@ class ConnectionService(BaseService):
     async def _receive_messages(self) -> None:
         """Receive and process WebSocket messages with Socket.IO routing."""
         try:
-            while self._ws and self._state == ConnectionState.CONNECTED:
+            while self._ws and self._state == ConnectionState.CONNECTED and self._ws.is_connected():
                 try:
-                    message = await asyncio.wait_for(
-                        self._ws.recv(), timeout=30.0
+                    # Receive message from curl transport (with timeout)
+                    loop = asyncio.get_event_loop()
+                    message = await loop.run_in_executor(
+                        None,
+                        self._ws.recv,
+                        1.0  # 1 second timeout
                     )
+                    
+                    if not message:
+                        # No message received, continue
+                        continue
 
                     self.logger.debug(f"Received raw message: {message}")
+                    
+                    # Handle Socket.IO ping
+                    if message == '2':
+                        self.logger.debug("Received Socket.IO ping, sending pong")
+                        await self.send_raw('3')
+                        continue
                     
                     # Parse Socket.IO message
                     parsed = self._parse_socketio_message(message)
@@ -378,25 +414,10 @@ class ConnectionService(BaseService):
                                 self._message_handler({"event": event_name, "data": event_data})
 
                 except asyncio.TimeoutError:
-                    # Send Socket.IO ping to keep connection alive
-                    if self._ws:
-                        try:
-                            await self._ws.send("2")  # Socket.IO ping
-                            self.logger.debug("Sent Socket.IO ping")
-                        except:
-                            pass
                     continue
-                except websockets.ConnectionClosed as e:
-                    self.logger.warning(f"WebSocket connection closed: {e.code} - {e.reason}")
-                    # If closed during pending requests, fail them with proper error
-                    for request_id, future in list(self._pending_requests.items()):
-                        if not future.done():
-                            future.set_exception(
-                                WebSocketError(f"Connection closed by server (code: {e.code}). SSID may be expired.")
-                            )
-                            del self._pending_requests[request_id]
-                    await self._handle_disconnect()
-                    break
+                except Exception as msg_error:
+                    self.logger.error(f"Error processing message: {msg_error}")
+                    continue
 
         except asyncio.CancelledError:
             self.logger.debug("Message receiving cancelled")
