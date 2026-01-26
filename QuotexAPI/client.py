@@ -31,6 +31,7 @@ class QuotexAPI:
         email: Optional[str] = None,
         password: Optional[str] = None,
         ssid: Optional[str] = None,
+        is_demo: bool = True,  # Default to demo
         config: Optional[QuotexConfig] = None,
         log_level: str = "INFO",
     ):
@@ -41,11 +42,12 @@ class QuotexAPI:
             email: User email for authentication.
             password: User password for authentication.
             ssid: Session ID for SSID-based authentication.
+            is_demo: Whether to use demo account (default: True).
             config: Optional configuration object. If not provided, loads from environment.
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
 
         Example:
-            >>> api = QuotexAPI(email="user@example.com", password="password123")
+            >>> api = QuotexAPI(ssid="your_token", is_demo=True)
             >>> await api.connect()
         """
         # Load or create configuration
@@ -61,6 +63,9 @@ class QuotexAPI:
             self.config.password = password
         if ssid:
             self.config.ssid = ssid
+        
+        # Set account type
+        self.config.is_demo = is_demo
 
         # Setup logging
         self.logger = setup_logger("quotex_api", log_level)

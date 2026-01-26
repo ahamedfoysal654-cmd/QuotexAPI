@@ -52,23 +52,30 @@ class AccountService(BaseService):
         self.logger.info("Fetching account balances")
 
         try:
-            # Subscribe to balance updates first
+            # Subscribe to balance response first
             balance_future = asyncio.Future()
             
             def handle_balance(data):
                 if not balance_future.done():
                     balance_future.set_result(data)
             
-            # Quotex sends balance updates automatically or via specific events
-            # Listen for balance event
-            self._connection.subscribe("balance", handle_balance)
+            # Quotex sends balance in response to s_balance/list request
+            # The response comes as: 451-[{"liveBalance":0,"demoBalance":10000,...}]
+            self._connection.subscribe("s_balance/list", handle_balance)
             
-            # Request balances (Quotex may send this automatically on connect)
-            # Try to get from authorization response or request explicitly
+            # Request balance using Socket.IO format
+            # Format: 42["s_balance/list",{"_placeholder":true,"num":0}]
+            await self._connection.send_socketio_event(
+                event="s_balance/list",
+                data={"_placeholder": True, "num": 0},
+                expect_response=False
+            )
+            
             try:
                 response = await asyncio.wait_for(balance_future, timeout=10.0)
             except asyncio.TimeoutError:
-                # If no response, use cached balances or defaults
+                self.logger.error("Balance request timeout")
+                # Use default values
                 response = {
                     "demoBalance": 10000.0,
                     "liveBalance": 0.0,
@@ -77,14 +84,16 @@ class AccountService(BaseService):
                     "dayBalance": 0
                 }
             finally:
-                self._connection.unsubscribe("balance", handle_balance)
+                self._connection.unsubscribe("s_balance/list", handle_balance)
             
             # Parse Quotex balance format
+            # Response: {"liveBalance":0,"demoBalance":10000,"tournamentsBalances":{},"dayLimit":0,"dayBalance":0}
             demo_balance = float(response.get("demoBalance", 0.0))
             real_balance = float(response.get("liveBalance", 0.0))
+            tournaments_balances = response.get("tournamentsBalances", {})
             
-            # Determine active account based on what was set during login
-            active = "demo" if self._active_account == AccountType.DEMO else "real"
+            # Determine active account based on config
+            active = "demo" if self.config.is_demo else "real"
             
             self._balances = [
                 Balance(
