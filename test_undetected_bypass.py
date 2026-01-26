@@ -16,7 +16,7 @@ options.add_argument('--disable-blink-features=AutomationControlled')
 
 try:
     print("   Starting Chrome (headless)...")
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    driver = uc.Chrome(options=options)
     
     print("   Loading https://qxbroker.com...")
     driver.get("https://qxbroker.com")
@@ -47,7 +47,7 @@ options2 = uc.ChromeOptions()
 
 try:
     print("   Starting Chrome (visible)...")
-    driver2 = uc.Chrome(options=options2, use_subprocess=True)
+    driver2 = uc.Chrome(options=options2)
     
     print("   Loading https://qxbroker.com...")
     driver2.get("https://qxbroker.com")
