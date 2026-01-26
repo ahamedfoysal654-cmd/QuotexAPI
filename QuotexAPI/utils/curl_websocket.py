@@ -192,11 +192,16 @@ class CurlWebSocketTransport:
         Returns:
             True if sent successfully, False otherwise
         """
+        print(f"[CURL DEBUG] send() called with message: {message[:100]}...")
+        
         if not self.process or not self.process.stdin:
             logger.error("Cannot send: not connected")
+            print("[CURL DEBUG] ERROR: Not connected")
             return False
             
         try:
+            print("[CURL DEBUG] Encoding message and creating WebSocket frame...")
+            
             # Encode message as bytes
             msg_bytes = message.encode('utf-8')
             
@@ -225,14 +230,18 @@ class CurlWebSocketTransport:
             for i, byte in enumerate(msg_bytes):
                 frame.append(byte ^ mask[i % 4])
             
+            print(f"[CURL DEBUG] Frame created: {len(frame)} bytes, writing to stdin...")
+            
             # Write to stdin
             self.process.stdin.write(frame)
             self.process.stdin.flush()
             
+            print(f"[CURL DEBUG] Frame written and flushed successfully")
             logger.debug(f"Sent WebSocket frame ({len(frame)} bytes): {message[:100]}...")
             return True
             
         except Exception as e:
+            print(f"[CURL DEBUG] ERROR in send(): {e}")
             logger.error(f"Send error: {e}")
             if self._on_error:
                 self._on_error(e)
