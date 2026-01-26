@@ -106,10 +106,22 @@ async def test_with_authorization():
     
     ssid_input = input("Enter your SSID token (or press Enter to skip authorization): ").strip()
     
-    # Extract SSID if user pasted the full Socket.IO message
+    # Extract full authorization data if user pasted the Socket.IO message
+    auth_data = None
     ssid = ssid_input
-    if '"session":"' in ssid_input:
-        # Extract from: 42["authorization",{"session":"TOKEN_HERE","isDemo":1,...}]
+    
+    if ssid_input.startswith('42["authorization"'):
+        # Full Socket.IO message provided - extract the data object
+        import re
+        match = re.search(r'42\["authorization",(\{.+\})\]', ssid_input)
+        if match:
+            import json
+            auth_data = json.loads(match.group(1))
+            ssid = auth_data.get('session', '')
+            print(f"📝 Extracted full auth data with isDemo={auth_data.get('isDemo')}, tournamentId={auth_data.get('tournamentId')}")
+            print(f"📝 Session token: {ssid[:20]}...")
+    elif '"session":"' in ssid_input:
+        # Just extract session if it's in some JSON format
         import re
         match = re.search(r'"session":"([^"]+)"', ssid_input)
         if match:
@@ -120,8 +132,11 @@ async def test_with_authorization():
     
     uri = "wss://ws2.qxbroker.com/socket.io/?EIO=3&transport=websocket"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 OPR/126.0.0.0",
         "Origin": "https://qxbroker.com",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     
     print(f"🔌 Connecting to {uri}...")
@@ -136,9 +151,13 @@ async def test_with_authorization():
                 # After receiving handshake (0{...}) and namespace connection (40)
                 if message.startswith('40') and ssid:
                     # Send authorization as shown in the screenshot
-                    # Format: 42["authorization",{"session":"YOUR_SSID"}]
-                    auth_msg = f'42["authorization",{{"session":"{ssid}"}}]'
-                    print(f"\n📤 Sending authorization: {auth_msg}")
+                    # Use full auth data if provided, otherwise just session
+                    if auth_data:
+                        import json
+                        auth_msg = f'42["authorization",{json.dumps(auth_data)}]'
+                    else:
+                        auth_msg = f'42["authorization",{{"session":"{ssid}"}}]'
+                    print(f"\n📤 Sending authorization: {auth_msg[:80]}...")
                     await websocket.send(auth_msg)
                     
                     # After auth, typically you'd request data
