@@ -114,6 +114,11 @@ async def test_with_authorization():
     
     ssid_input = input("Enter your SSID token (or press Enter to skip authorization): ").strip()
     
+    # Ask for cookies if available
+    print("\n❓ Do you have any cookies from the browser? (Check Network tab → WebSocket → Headers → Cookie)")
+    print("   If yes, paste the entire Cookie header value (or press Enter to skip)")
+    cookies_input = input("Cookies: ").strip()
+    
     # Extract full authorization data if user pasted the Socket.IO message
     auth_data = None
     ssid = ssid_input
@@ -146,6 +151,10 @@ async def test_with_authorization():
         "Pragma": "no-cache",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     }
+    
+    if cookies_input:
+        headers["Cookie"] = cookies_input
+        print(f"🍪 Added cookies to headers")
     
     print(f"🔌 Connecting to {uri}...")
     
