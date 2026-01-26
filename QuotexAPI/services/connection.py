@@ -194,7 +194,7 @@ class ConnectionService(BaseService):
     
     def _parse_socketio_message(self, message) -> Optional[tuple[str, Any]]:
         """
-        Parse Socket.IO format message: 42["event", data]
+        Parse Socket.IO format message: 42["event", data] or 451-[data]
         
         Args:
             message: Raw message (string or bytes)
@@ -206,7 +206,26 @@ class ConnectionService(BaseService):
         if isinstance(message, bytes):
             message = message.decode('utf-8')
         
-        # Socket.IO messages start with message type code (42 for message)
+        # Handle Socket.IO acknowledgment messages (451-[data])
+        if message.startswith("45") and "-" in message:
+            try:
+                # Acknowledgment format: 451-[{"liveBalance":0,"demoBalance":10000,...}]
+                dash_idx = message.index('-')
+                json_part = message[dash_idx + 1:]
+                ack_data = json.loads(json_part)
+                
+                # ACK responses are arrays, get first element
+                if isinstance(ack_data, list) and len(ack_data) > 0:
+                    # Try to determine which request this ACK is for
+                    # For now, we'll use a generic event name
+                    self.logger.debug(f"Received ACK: {ack_data}")
+                    # Return as a generic response that can be caught by pending requests
+                    return ("_ack_response", ack_data[0])
+            except Exception as e:
+                self.logger.error(f"Failed to parse ACK message: {e}")
+            return None
+        
+        # Socket.IO event messages start with "42"
         if not message.startswith("42"):
             # Handle Socket.IO handshake messages (0, 40, etc.)
             if message.startswith("0"):
