@@ -67,34 +67,38 @@ class TradingService(BaseService):
             await self._validate_trade_request(trade_request)
 
             # Generate request ID
-            request_id = int(asyncio.get_event_loop().time() * 1000000) % 10000000000
+            import time
+            request_id = int(time.time() * 1000)  # Unix timestamp in milliseconds
             
-            # Format asset name (add _otc suffix if not present)
-            asset = trade_request.asset
-            if not asset.endswith("_otc"):
-                asset = f"{asset}_otc"
+            # Format asset name (remove _otc suffix if present, Quotex might add it)
+            asset = trade_request.asset.replace("_otc", "")
             
             # Prepare order data in Quotex format
             order_data = {
                 "asset": asset,
-                "amount": trade_request.amount,
+                "amount": int(trade_request.amount),  # Quotex expects integer
                 "time": trade_request.expiry,
-                "action": trade_request.direction.value,  # "call" or "put"
+                "action": trade_request.direction.value.lower(),  # "call" or "put"
                 "isDemo": 1 if is_demo else 0,
                 "tournamentId": 0,
                 "requestId": request_id,
                 "optionType": 100  # Binary option type
             }
             
-            # Subscribe to order response
+            self.logger.info(f"Sending order: {order_data}")
+            
+            # Subscribe to multiple possible response events
             order_future = asyncio.Future()
             
             def handle_order_response(data):
-                # Check if this is the response for our request
-                if data.get("requestId") == request_id or not order_future.done():
+                self.logger.info(f"Received order response: {data}")
+                if not order_future.done():
                     order_future.set_result(data)
             
+            # Subscribe to possible response event names
             self._connection.subscribe("orders/open", handle_order_response)
+            self._connection.subscribe("order/created", handle_order_response)
+            self._connection.subscribe("trade_created", handle_order_response)
             
             # Send Socket.IO order open event
             await self._connection.send_socketio_event(
@@ -108,16 +112,36 @@ class TradingService(BaseService):
                 response = await asyncio.wait_for(order_future, timeout=30.0)
             finally:
                 self._connection.unsubscribe("orders/open", handle_order_response)
+                self._connection.unsubscribe("order/created", handle_order_response)
+                self._connection.unsubscribe("trade_created", handle_order_response)
             
             # Parse response
-            if not response or not response.get("isSuccessful", True):
-                error = response.get("message", "Trade placement failed") if response else "No response"
-                raise TradeError(error)
+            if not response:
+                raise TradeError("No response received from server")
+            
+            self.logger.info(f"Trade response: {response}")
+            
+            # Check for errors
+            if isinstance(response, dict):
+                if response.get("isSuccessful") == False or response.get("error"):
+                    error = response.get("message") or response.get("error") or "Trade placement failed"
+                    raise TradeError(error)
             
             # Parse response into Trade object
             now = datetime.now()
+            
+            # Handle different response formats
+            if isinstance(response, dict):
+                order_id = str(response.get("id") or response.get("orderId") or response.get("order_id") or request_id)
+                open_price = response.get("openPrice") or response.get("open_price") or response.get("price") or 0.0
+                payout = response.get("percent") or response.get("payout") or response.get("profit_percent") or 85.0
+            else:
+                order_id = str(request_id)
+                open_price = 0.0
+                payout = 85.0
+            
             trade = Trade(
-                order_id=str(response.get("id", response.get("orderId", request_id))),
+                order_id=order_id,
                 asset=trade_request.asset,
                 direction=trade_request.direction,
                 amount=trade_request.amount,
@@ -125,11 +149,11 @@ class TradingService(BaseService):
                 status=TradeStatus.ACTIVE,
                 result=None,
                 profit=None,
-                open_price=response.get("openPrice", response.get("open_price", 0.0)),
+                open_price=open_price,
                 close_price=None,
                 open_time=now,
                 close_time=None,
-                payout_percentage=response.get("percent", response.get("payout", 85.0)),
+                payout_percentage=payout,
             )
 
             self.logger.info(f"Trade placed successfully: {trade.order_id} (requestId: {request_id})")
