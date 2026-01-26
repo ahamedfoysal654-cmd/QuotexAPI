@@ -11,7 +11,19 @@ async def main():
     print("=" * 60)
     
     # Get SSID
-    ssid = input("\n🔑 Enter your SSID: ").strip()
+    ssid_input = input("\n🔑 Enter your SSID: ").strip()
+    
+    # Extract SSID if full authorization message was pasted
+    import re
+    if ssid_input.startswith('42["authorization"'):
+        match = re.search(r'"session":"([^"]+)"', ssid_input)
+        if match:
+            ssid = match.group(1)
+            print(f"📝 Extracted SSID: {ssid[:20]}...")
+        else:
+            ssid = ssid_input
+    else:
+        ssid = ssid_input
     
     # Create API instance (demo account by default)
     api = QuotexAPI(ssid=ssid, is_demo=True)
@@ -27,19 +39,14 @@ async def main():
         balance = await api.get_balance()
         print(f"Balance: ${balance.amount:.2f} ({balance.account_type.value})")
         
-        # Get available assets
-        print("\n📊 Getting available assets...")
-        assets = await api.get_available_assets()
-        
-        if assets:
-            print(f"Found {len(assets)} available assets:")
-            # Show first 10 assets
-            for i, asset in enumerate(assets[:10]):
-                print(f"  {i+1}. {asset.symbol} - {asset.name}")
-            if len(assets) > 10:
-                print(f"  ... and {len(assets) - 10} more")
-        else:
-            print("No assets available, using default assets")
+        # Try to get available assets (optional)
+        print("\n📊 Checking available assets...")
+        try:
+            assets = await api.get_assets()
+            if assets:
+                print(f"Found {len(assets)} assets")
+        except Exception as e:
+            print(f"⚠️  Could not fetch assets: {e}")
             assets = []
         
         # Interactive trading menu
