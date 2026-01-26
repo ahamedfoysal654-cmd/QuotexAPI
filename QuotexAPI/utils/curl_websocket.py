@@ -69,18 +69,25 @@ class CurlWebSocketTransport:
             response = self.session.get(base_url, headers=headers, timeout=10)
             print(f"[HYBRID] Polling handshake response: {response.text[:200]}")
             
-            if response.status_code == 200 and response.text.startswith('0{'):
-                import json
-                handshake = json.loads(response.text[1:])
-                self.sid = handshake.get('sid')
-                self.polling_url = base_url
-                print(f"[HYBRID] Got SID from polling: {self.sid}")
+            if response.status_code == 200:
+                # Parse Socket.IO polling format: <length>:<message><length>:<message>...
+                # Example: 96:0{"sid":"..."}2:40
+                text = response.text
                 
-                # Step 1b: Send namespace connect via polling
-                print("[HYBRID] Sending namespace connect via polling...")
-                url_with_sid = f"{self.polling_url}&sid={self.sid}"
-                response = self.session.post(url_with_sid, headers=headers, data='40', timeout=10)
-                print(f"[HYBRID] Namespace connect response: {response.text[:100]}")
+                # Extract handshake (starts with digit:0{)
+                import re
+                match = re.search(r'\d+:(0\{[^}]+\})', text)
+                if match:
+                    handshake_msg = match.group(1)  # The "0{...}" part
+                    import json
+                    handshake = json.loads(handshake_msg[1:])  # Remove '0' prefix
+                    self.sid = handshake.get('sid')
+                    self.polling_url = base_url
+                    print(f"[HYBRID] Got SID from polling: {self.sid}")
+                else:
+                    logger.error(f"Failed to parse polling handshake: {text}")
+                    return False
+                
             else:
                 logger.error(f"Failed to establish polling session: {response.status_code}")
                 return False
