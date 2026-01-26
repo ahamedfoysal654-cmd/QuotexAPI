@@ -90,16 +90,16 @@ class ConnectionService(BaseService):
                 "Accept-Language": "en-US,en;q=0.9",
             }
             
-            # Create curl WebSocket t - schedule coroutine in main loop
+            # Create curl WebSocket transport
+            self._ws = CurlWebSocketTransport(self.config.ws_url, headers)
+            
+            # Set up message callback - schedule coroutine in main loop
             def on_message(msg):
                 if self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(
                         self._handle_message(msg),
                         self._loop
-                    asyncio.run_coroutine_threadsafe(
-                    self._handle_message(msg),
-                    asyncio.get_event_loop()
-                )
+                    )
             
             self._ws.set_on_message(on_message)
             
