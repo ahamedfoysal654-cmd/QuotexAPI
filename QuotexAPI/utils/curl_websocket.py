@@ -80,13 +80,21 @@ class CurlWebSocketTransport:
             
             self.running = True
             
-            # Start reader thread
+            # Start reader threads
             self.reader_thread = threading.Thread(
                 target=self._read_messages,
                 daemon=True,
                 name="CurlWebSocketReader"
             )
             self.reader_thread.start()
+            
+            # Start stderr reader
+            self.stderr_thread = threading.Thread(
+                target=self._read_stderr,
+                daemon=True,
+                name="CurlStderrReader"
+            )
+            self.stderr_thread.start()
             
             # Wait a bit to see if connection succeeds
             time.sleep(0.5)
@@ -185,6 +193,25 @@ class CurlWebSocketTransport:
         # Connection closed
         if self._on_close:
             self._on_close()
+    
+    def _read_stderr(self):
+        """Read stderr from curl to catch any errors."""
+        print("[CURL STDERR] Starting stderr reader")
+        while self.running and self.process:
+            try:
+                line = self.process.stderr.readline()
+                if line:
+                    error_msg = line.decode('utf-8', errors='ignore').strip()
+                    if error_msg:
+                        print(f"[CURL STDERR] {error_msg}")
+                        logger.warning(f"Curl stderr: {error_msg}")
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                if self.running:
+                    print(f"[CURL STDERR] Error reading: {e}")
+                break
+        print("[CURL STDERR] Stderr reader exiting")
     
     def send(self, message: str) -> bool:
         """
