@@ -263,7 +263,7 @@ class ConnectionService(BaseService):
             socketio_msg = self._format_socketio_message(event, data)
             
             self.logger.debug(f"Sending Socket.IO event '{event}': {socketio_msg}")
-            await self._ws.send(socketio_msg)
+            await self.send_raw(socketio_msg)
             
             if expect_response:
                 # Create future to wait for response
