@@ -316,6 +316,29 @@ class QuotexAPI:
 
     # Trading Methods
 
+    async def place_trade(self, trade_request: TradeRequest) -> Trade:
+        """
+        Place a binary options trade using a TradeRequest object.
+
+        Args:
+            trade_request: TradeRequest object with trade parameters.
+
+        Returns:
+            Trade: Placed trade information.
+
+        Example:
+            >>> from QuotexAPI.models import TradeRequest
+            >>> from QuotexAPI.enums import TradeDirection
+            >>> trade_request = TradeRequest(
+            ...     asset="EURUSD_otc",
+            ...     amount=1.0,
+            ...     direction=TradeDirection.CALL,
+            ...     expiry=60
+            ... )
+            >>> trade = await api.place_trade(trade_request)
+        """
+        return await self.trading.place_trade(trade_request, is_demo=self.config.is_demo)
+
     async def buy(
         self,
         asset: str,
@@ -350,7 +373,7 @@ class QuotexAPI:
             direction=direction,
             expiry=expiry,
         )
-        return await self.trading.place_trade(trade_request)
+        return await self.trading.place_trade(trade_request, is_demo=self.config.is_demo)
 
     async def cancel_trade(self, order_id: str) -> bool:
         """
