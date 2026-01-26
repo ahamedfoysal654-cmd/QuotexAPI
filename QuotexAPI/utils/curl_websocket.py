@@ -88,12 +88,6 @@ class CurlWebSocketTransport:
                 logger.error("Failed to extract SID from handshake")
                 return False
             
-            # Important: Acknowledge receipt of handshake by sending POST "ok"
-            print("[HTTP POLLING] Acknowledging handshake...")
-            ack_url = f"{self.polling_url}&sid={self.sid}"
-            ack_response = self.session.post(ack_url, headers=headers, data="", timeout=10)
-            print(f"[HTTP POLLING] Ack response ({ack_response.status_code}): {ack_response.text[:100]}")
-            
             self.running = True
             
             # Start polling thread
