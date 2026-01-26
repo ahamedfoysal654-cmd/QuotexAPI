@@ -48,10 +48,50 @@ class CurlWebSocketTransport:
     def connect(self) -> bool:
         """
         Connect to WebSocket via curl.
+        First establishes HTTP polling session to get valid SID for sending.
         
         Returns:
             True if connection successful, False otherwise
         """
+        # Step 1: Establish HTTP polling session first to get valid SID
+        print("[HYBRID] Step 1: Establishing HTTP polling session...")
+        try:
+            base_url = self.url.replace('wss://', 'https://').replace('transport=websocket', 'transport=polling')
+            
+            self.session = requests.Session(impersonate="chrome110")
+            headers = {
+                'Origin': 'https://qxbroker.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                **self.headers
+            }
+            
+            response = self.session.get(base_url, headers=headers, timeout=10)
+            print(f"[HYBRID] Polling handshake response: {response.text[:200]}")
+            
+            if response.status_code == 200 and response.text.startswith('0{'):
+                import json
+                handshake = json.loads(response.text[1:])
+                self.sid = handshake.get('sid')
+                self.polling_url = base_url
+                print(f"[HYBRID] Got SID from polling: {self.sid}")
+                
+                # Step 1b: Send namespace connect via polling
+                print("[HYBRID] Sending namespace connect via polling...")
+                url_with_sid = f"{self.polling_url}&sid={self.sid}"
+                response = self.session.post(url_with_sid, headers=headers, data='40', timeout=10)
+                print(f"[HYBRID] Namespace connect response: {response.text[:100]}")
+            else:
+                logger.error(f"Failed to establish polling session: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to establish polling session: {e}")
+            print(f"[HYBRID] Error establishing polling: {e}")
+            return False
+        
+        # Step 2: Now start curl WebSocket for receiving
+        print("[HYBRID] Step 2: Starting curl WebSocket for receiving...")
         cmd = ['curl', '-N', '--http1.1', self.url]
         
         # Add custom headers
