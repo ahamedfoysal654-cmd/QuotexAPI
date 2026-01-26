@@ -151,6 +151,12 @@ class CurlWebSocketTransport:
                 if response.status_code == 200 and response.text:
                     print(f"[HTTP POLLING] Received: {response.text[:300]}")
                     
+                    # Socket.IO polling protocol: after receiving messages,
+                    # we must POST to acknowledge receipt before next GET
+                    print("[HTTP POLLING] Acknowledging receipt...")
+                    ack_response = self.session.post(url, headers=headers, data="", timeout=10)
+                    print(f"[HTTP POLLING] Ack status: {ack_response.status_code}")
+                    
                     # Parse messages
                     messages = self._parse_polling_payload(response.text)
                     
@@ -167,6 +173,7 @@ class CurlWebSocketTransport:
                 
                 elif response.status_code != 200:
                     logger.warning(f"Poll failed: {response.status_code}")
+                    print(f"Poll failed: {response.status_code}")
                     time.sleep(1)
                     
             except Exception as e:
