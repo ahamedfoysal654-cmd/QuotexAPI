@@ -144,6 +144,34 @@ class ConnectionService(BaseService):
 
         self._state = ConnectionState.DISCONNECTED
         self.logger.info("Disconnected from WebSocket")
+    
+    async def _handle_message(self, message: str) -> None:
+        """
+        Handle incoming message from curl transport (called from thread).
+        
+        Args:
+            message: Raw message string
+        """
+        self.logger.debug(f"Handling message: {message[:100]}...")
+        
+        # Handle Socket.IO ping
+        if message == '2':
+            self.logger.debug("Received Socket.IO ping, sending pong")
+            await self.send_raw('3')
+            return
+        
+        # Parse and route message
+        parsed = self._parse_socketio_message(message)
+        if parsed:
+            event_name, event_data = parsed
+            await self._route_socketio_event(event_name, event_data)
+            
+            if self._message_handler:
+                if asyncio.iscoroutinefunction(self._message_handler):
+                    await self._message_handler({"event": event_name, "data": event_data})
+                else:
+                    self._message_handler({"event": event_name, "data": event_data})
+        self.logger.info("Disconnected from WebSocket")
 
     def _format_socketio_message(self, event: str, data: Any) -> str:
         """
