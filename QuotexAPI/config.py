@@ -16,6 +16,10 @@ class QuotexConfig(BaseSettings):
     email: Optional[str] = Field(None, validation_alias="QUOTEX_EMAIL")
     password: Optional[str] = Field(None, validation_alias="QUOTEX_PASSWORD")
     ssid: Optional[str] = Field(None, validation_alias="QUOTEX_SSID")
+    
+    # Account Settings
+    is_demo: bool = Field(default=True, validation_alias="QUOTEX_IS_DEMO")  # Default to demo
+    tournament_id: int = Field(default=0, validation_alias="QUOTEX_TOURNAMENT_ID")
 
     # API Configuration
     api_url: str = Field(
