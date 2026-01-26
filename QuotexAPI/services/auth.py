@@ -138,10 +138,11 @@ class AuthService(BaseService):
         try:
             # Send authorization event in Socket.IO format
             # Format: 42["authorization",{"session":"...","isDemo":1,"tournamentId":0}]
+            # Use config values for isDemo and tournamentId
             auth_data = {
                 "session": ssid,
                 "isDemo": 1 if is_demo else 0,
-                "tournamentId": 0
+                "tournamentId": self.config.tournament_id
             }
             
             # Subscribe to authorization response before sending
