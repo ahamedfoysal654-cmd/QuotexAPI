@@ -277,7 +277,7 @@ class ConnectionService(BaseService):
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._ws.send, message)
-            self.logger.debug(f"Sent raw message: {message[:100]}...")
+            self.logger.info(f"Sent raw message: {message[:100]}...")
         except Exception as e:
             self.logger.error(f"Failed to send message: {str(e)}")
             raise WebSocketError(f"Failed to send message: {str(e)}") from e
@@ -313,8 +313,9 @@ class ConnectionService(BaseService):
             # Format in Socket.IO format: 42["event", data]
             socketio_msg = self._format_socketio_message(event, data)
             
-            self.logger.debug(f"Sending Socket.IO event '{event}': {socketio_msg}")
+            self.logger.info(f"Sending Socket.IO event '{event}': {socketio_msg[:200]}...")
             await self.send_raw(socketio_msg)
+            self.logger.info(f"Socket.IO event '{event}' sent successfully")
             
             if expect_response:
                 # Create future to wait for response
