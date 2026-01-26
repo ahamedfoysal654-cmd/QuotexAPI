@@ -71,27 +71,46 @@ class CurlWebSocket:
         buffer = ""
         while self.running and self.process and self.process.poll() is None:
             try:
-                # Read character by character to avoid blocking
+                # Read character by character
                 char = self.process.stdout.read(1)
                 if not char:
-                    break
+                    time.sleep(0.01)
+                    continue
                     
                 buffer += char
                 
-                # Socket.IO messages often come in specific patterns
-                # Try to detect complete messages
-                if char in ['\n', '\x1e']:  # newline or record separator
-                    if buffer.strip():
-                        self.message_queue.put(buffer.strip())
-                        buffer = ""
-                # Also check for complete Socket.IO frames
-                elif buffer and (
-                    buffer.startswith('0{') and '}' in buffer or
-                    buffer.startswith('40') and len(buffer) >= 2 or
-                    buffer.startswith('42[') and buffer.count('[') == buffer.count(']') or
-                    buffer.startswith('451-') or
-                    buffer in ['2', '3']
-                ):
+                # Detect complete Socket.IO messages
+                # Messages are typically not newline-delimited but come one after another
+                message_detected = False
+                
+                # Handshake: 0{...}
+                if buffer.startswith('0{') and buffer.count('{') == buffer.count('}') and buffer.count('{') > 0:
+                    message_detected = True
+                # Namespace: 40, 41
+                elif buffer in ['40', '41']:
+                    message_detected = True
+                # Ping/Pong: 2, 3
+                elif buffer in ['2', '3']:
+                    message_detected = True
+                # Event: 42[...]
+                elif buffer.startswith('42['):
+                    # Count brackets to detect complete JSON
+                    if buffer.count('[') == buffer.count(']') and buffer.count('[') > 0:
+                        message_detected = True
+                # Ack: 451-[...]  or 450-[...]
+                elif buffer.startswith('45') and '-' in buffer:
+                    # Check if we have complete JSON after the dash
+                    dash_idx = buffer.index('-')
+                    json_part = buffer[dash_idx+1:]
+                    if json_part:
+                        try:
+                            # Try to count brackets
+                            if json_part.startswith('[') and json_part.count('[') == json_part.count(']'):
+                                message_detected = True
+                        except:
+                            pass
+                
+                if message_detected:
                     self.message_queue.put(buffer)
                     buffer = ""
                     
@@ -174,11 +193,13 @@ def main():
             # Receive handshake and initial messages
             start_time = time.time()
             authorized = False
+            message_count = 0
             
-            while time.time() - start_time < 30:
-                message = ws.receive(timeout=1.0)
+            while time.time() - start_time < 0.5)
                 
                 if message:
+                    message_count += 1
+                    print(f"\n📥 [{message_count}] {message[:150]
                     print(f"\n📥 {message}")
                     
                     if message.startswith('0{'):
@@ -232,7 +253,9 @@ def main():
                 
                 # Check if process is still running
                 if ws.process and ws.process.poll() is not None:
-                    print("\n⚠️  Curl process terminated")
+                    print
+            
+            print(f"\n📊 Total messages received: {message_count}")("\n⚠️  Curl process terminated")
                     break
                     
         except KeyboardInterrupt:
