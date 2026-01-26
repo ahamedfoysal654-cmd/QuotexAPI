@@ -1,21 +1,22 @@
 """
 Curl-based WebSocket transport for bypassing Cloudflare bot protection.
-Uses curl subprocess as transport layer since it bypasses Cloudflare successfully.
+Uses curl_cffi library which provides curl impersonation to bypass Cloudflare.
 """
 
-import subprocess
 import threading
 import queue
 import json
 import time
 from typing import Optional, Dict, Callable
+from curl_cffi import requests
+from curl_cffi.requests import WebSocket
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class CurlWebSocketTransport:
-    """WebSocket transport using curl subprocess to bypass Cloudflare."""
+    """WebSocket transport using curl_cffi to bypass Cloudflare."""
     
     def __init__(self, url: str, headers: Optional[Dict[str, str]] = None):
         """
@@ -27,7 +28,7 @@ class CurlWebSocketTransport:
         """
         self.url = url
         self.headers = headers or {}
-        self.process: Optional[subprocess.Popen] = None
+        self.ws: Optional[WebSocket] = None
         self.message_queue = queue.Queue()
         self.running = False
         self.reader_thread: Optional[threading.Thread] = None
@@ -37,39 +38,29 @@ class CurlWebSocketTransport:
         
     def connect(self) -> bool:
         """
-        Connect to WebSocket via curl.
+        Connect to WebSocket via curl_cffi.
         
         Returns:
             True if connection successful, False otherwise
         """
-        cmd = ['curl', self.url]
-        
-        # Add custom headers
-        for key, value in self.headers.items():
-            cmd.extend(['-H', f'{key}: {value}'])
-        
-        # Essential WebSocket headers
-        cmd.extend([
-            '-H', 'Upgrade: websocket',
-            '-H', 'Connection: Upgrade',
-            '-H', 'Sec-WebSocket-Version: 13',
-            '-H', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
-            '-H', 'Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits',
-            '--no-buffer'  # Disable buffering for real-time communication
-        ])
-        
-        logger.info("Starting curl WebSocket connection...")
+        logger.info("Starting curl_cffi WebSocket connection...")
         logger.debug(f"URL: {self.url}")
         
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=0  # Unbuffered
-            )
+            # Create session with browser impersonation
+            session = requests.Session(impersonate="chrome110")
+            
+            # Prepare headers
+            headers = {
+                'Origin': 'https://qxbroker.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                **self.headers
+            }
+            
+            # Connect to WebSocket
+            self.ws = session.ws_connect(self.url, headers=headers)
             
             self.running = True
             
@@ -85,7 +76,7 @@ class CurlWebSocketTransport:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to start curl: {e}")
+            logger.error(f"Failed to connect: {e}")
             if self._on_error:
                 self._on_error(e)
             return False
@@ -101,60 +92,28 @@ class CurlWebSocketTransport:
                 if not char:
                     time.sleep(0.01)
                     continue
-                    
-                buffer += char
+                    WebSocket in background thread."""
+        while self.running and self.ws:
+            try:
+                # Receive message from WebSocket
+                message = self.ws.recv()
+                if not message:
+                    time.sleep(0.01)
+                    continue
                 
-                # Detect complete Socket.IO messages
-                message_detected = False
+                # Handle binary or text messages
+                if isinstance(message, bytes):
+                    message = message.decode('utf-8')
                 
-                # Handshake: 0{...}
-                if buffer.startswith('0{'):
-                    if buffer.count('{') == buffer.count('}') and buffer.count('{') > 0:
-                        message_detected = True
-                        
-                # Namespace connect/disconnect: 40, 41
-                elif buffer in ['40', '41']:
-                    message_detected = True
-                    
-                # Ping/Pong: 2, 3
-                elif buffer in ['2', '3']:
-                    message_detected = True
-                    
-                # Event message: 42[...]
-                elif buffer.startswith('42['):
-                    if buffer.count('[') == buffer.count(']') and buffer.count('[') > 0:
-                        message_detected = True
-                        
-                # Acknowledgment: 451-[...], 450-[...]
-                elif buffer.startswith('45') and '-' in buffer:
-                    dash_idx = buffer.index('-')
-                    json_part = buffer[dash_idx + 1:]
-                    if json_part and json_part.startswith('['):
-                        if json_part.count('[') == json_part.count(']'):
-                            message_detected = True
+                # Put message in queue
+                self.message_queue.put(message)
                 
-                if message_detected:
-                    # Put message in queue
-                    self.message_queue.put(buffer)
-                    
-                    # Call callback if set
-                    if self._on_message:
-                        try:
-                            self._on_message(buffer)
-                        except Exception as e:
-                            logger.error(f"Error in message callback: {e}")
-                    
-                    buffer = ""
-                    
-            except Exception as e:
-                if self.running:
-                    logger.error(f"Read error: {e}")
-                    if self._on_error:
-                        self._on_error(e)
-                break
-        
-        # Connection closed
-        if self._on_close:
+                # Call callback if set
+                if self._on_message:
+                    try:
+                        self._on_message(message)
+                    except Exception as e:
+                        logger.error(f"Error in message callback: {e}")
             self._on_close()
     
     def send(self, message: str) -> bool:
@@ -191,23 +150,20 @@ class CurlWebSocketTransport:
         Args:
             timeout: Timeout in seconds (None = block forever)
             
+        Returns:WebSocket.
+        
+        Args:
+            message: Message string to send
+            
         Returns:
-            Message string or None if timeout
+            True if sent successfully, False otherwise
         """
+        if not self.ws:
+            logger.error("Cannot send: not connected")
+            return False
+            
         try:
-            return self.message_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-    
-    def set_on_message(self, callback: Callable[[str], None]):
-        """Set callback for incoming messages."""
-        self._on_message = callback
-    
-    def set_on_error(self, callback: Callable[[Exception], None]):
-        """Set callback for errors."""
-        self._on_error = callback
-    
-    def set_on_close(self, callback: Callable[[], None]):
+            self.ws.send(messageCallable[[], None]):
         """Set callback for connection close."""
         self._on_close = callback
     
@@ -233,3 +189,9 @@ class CurlWebSocketTransport:
             self.process is not None and
             self.process.poll() is None
         )
+ws:ws is not
+                self.ws.close()
+            except:
+                pass
+            
+            self.w
