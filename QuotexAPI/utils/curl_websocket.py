@@ -92,52 +92,60 @@ class CurlWebSocketTransport:
                     return False
                 
                 print(f"[HTTP POLLING] Handshake response: {response.text[:200]}")
-            
-            # Parse polling response format: <length>:<message><length>:<message>...
-            # Example: 96:0{"sid":"..."}2:40
-            messages = self._parse_polling_payload(response.text)
-            
-            # Extract SID from handshake
-            handshake_msg = None
-            for msg in messages:
-                if msg.startswith('0{'):
-                    handshake = json_module.loads(msg[1:])
-                    self.sid = handshake.get('sid')
-                    handshake_msg = msg
-                    print(f"[HTTP POLLING] Got SID: {self.sid}")
-                    break
-            
-            if not self.sid:
-                logger.error("Failed to extract SID from handshake")
+                
+                # Parse polling response format: <length>:<message><length>:<message>...
+                # Example: 96:0{"sid":"..."}2:40
+                messages = self._parse_polling_payload(response.text)
+                
+                # Extract SID from handshake
+                handshake_msg = None
+                for msg in messages:
+                    if msg.startswith('0{'):
+                        handshake = json_module.loads(msg[1:])
+                        self.sid = handshake.get('sid')
+                        handshake_msg = msg
+                        print(f"[HTTP POLLING] Got SID: {self.sid}")
+                        break
+                
+                if not self.sid:
+                    logger.error("Failed to extract SID from handshake")
+                    if attempt < max_retries - 1:
+                        continue
+                    return False
+                
+                # Process initial messages (like namespace connect "2:40")
+                for msg in messages:
+                    if msg != handshake_msg and self._on_message:
+                        try:
+                            self._on_message(msg)
+                        except Exception as e:
+                            logger.error(f"Callback error: {e}")
+                
+                self.running = True
+                
+                # Start polling thread
+                self.poller_thread = threading.Thread(
+                    target=self._poll_messages,
+                    daemon=True,
+                    name="HTTPPoller"
+                )
+                self.poller_thread.start()
+                
+                logger.info("HTTP polling connection established")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+                print(f"[HTTP POLLING] Connection error: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                if self._on_error:
+                    self._on_error(e)
                 return False
-            
-            # Process initial messages (like namespace connect "2:40")
-            for msg in messages:
-                if msg != handshake_msg and self._on_message:
-                    try:
-                        self._on_message(msg)
-                    except Exception as e:
-                        logger.error(f"Callback error: {e}")
-            
-            self.running = True
-            
-            # Start polling thread
-            self.poller_thread = threading.Thread(
-                target=self._poll_messages,
-                daemon=True,
-                name="HTTPPoller"
-            )
-            self.poller_thread.start()
-            
-            logger.info("HTTP polling connection established")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to connect: {e}")
-            print(f"[HTTP POLLING] Connection error: {e}")
-            if self._on_error:
-                self._on_error(e)
-            return False
+        
+        # All retries failed
+        logger.error("Failed to connect after all retries")
+        return False
     
     def _parse_polling_payload(self, payload: str) -> list:
         """Parse Socket.IO polling payload format: <length>:<message>..."""
