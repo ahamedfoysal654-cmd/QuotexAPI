@@ -30,6 +30,7 @@ class ConnectionService(BaseService):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._message_handler: Optional[Callable] = None
         self._receive_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # Store event loop
         
         # Message routing infrastructure (Socket.IO format)
         self._pending_requests: Dict[str, asyncio.Future] = {}
@@ -73,6 +74,9 @@ class ConnectionService(BaseService):
         self._message_handler = message_handler
         self._state = ConnectionState.CONNECTING
         
+        # Capture the event loop for thread-safe communication
+        self._loop = asyncio.get_event_loop()
+        
         self.logger.info(f"Establishing WebSocket connection to Quotex via curl")
         self.logger.debug(f"WebSocket URL: {self.config.ws_url}")
 
@@ -86,13 +90,13 @@ class ConnectionService(BaseService):
                 "Accept-Language": "en-US,en;q=0.9",
             }
             
-            # Create curl WebSocket transport
-            self._ws = CurlWebSocketTransport(self.config.ws_url, headers)
-            
-            # Set up message callback
+            # Create curl WebSocket t - schedule coroutine in main loop
             def on_message(msg):
-                # Queue message for async processing
-                asyncio.run_coroutine_threadsafe(
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_message(msg),
+                        self._loop
+                    asyncio.run_coroutine_threadsafe(
                     self._handle_message(msg),
                     asyncio.get_event_loop()
                 )
